@@ -1,0 +1,12 @@
+.git
+.gradle
+.idea
+build/tmp
+build/classes
+build/resources
+src
+*.md
+.env
+.env.local
+wallet/
+_to_delete/
