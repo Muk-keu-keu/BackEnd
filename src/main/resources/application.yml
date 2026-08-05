@@ -1,0 +1,58 @@
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  application:
+    name: mukkeu
+
+  # Oracle Autonomous Database (ap-seoul-1 / QV3WUK36KKE33ZVD)
+  # 접속 정보는 환경마다 다르므로 기본값을 두지 않는다. 없으면 기동 시점에 바로 실패한다.
+  #   로컬  : .env  (git 제외)
+  #   서버  : 환경변수 / 시크릿 매니저
+  # 지갑을 푼 폴더를 TNS_ADMIN 으로 지정한다. 예)
+  #   ORACLE_DB_URL=jdbc:oracle:thin:@qv3wuk36kke33zvd_high?TNS_ADMIN=/opt/oracle/wallet_mukkeu
+  datasource:
+    url: ${ORACLE_DB_URL}
+    username: ${ORACLE_DB_USERNAME}
+    password: ${ORACLE_DB_PASSWORD}
+    driver-class-name: oracle.jdbc.OracleDriver
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+      connection-timeout: 30000
+      # ADB 는 유휴 연결을 끊으므로 살아있는 연결인지 확인한다
+      connection-test-query: SELECT 1 FROM DUAL
+
+  jpa:
+    hibernate:
+      # 최초 실행 시 테이블 생성이 필요하면 update, 스키마를 직접 관리하면 validate
+      ddl-auto: ${JPA_DDL_AUTO}
+    show-sql: ${JPA_SHOW_SQL:true}
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+
+custom:
+  jwt:
+    secrets:
+      # HS256 서명 키. 반드시 32바이트(영문/숫자 32자) 이상
+      appkey: ${JWT_APP_KEY}
+    exp-time:
+      access: ${JWT_ACCESS_EXP}
+      refresh: ${JWT_REFRESH_EXP}
+
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS}
+
+server:
+  port: ${SERVER_PORT:8700}
+
+logging:
+  level:
+    root: INFO
+    mukkeu.mukkeu: DEBUG
+
+kakao:
+  api:
+    key: ${KAKAO_NAVI_KEY}
+    base-url: ${KAKAO_NAVI_URL}
+
