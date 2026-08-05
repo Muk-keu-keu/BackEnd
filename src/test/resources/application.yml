@@ -1,0 +1,34 @@
+# 테스트 전용 설정 : 실제 Oracle / .env 없이 동작하도록 인메모리 DB를 쓴다
+spring:
+  config:
+    import: optional:file:.env[.properties]
+
+  datasource:
+    url: jdbc:h2:mem:mukkeu;DB_CLOSE_DELAY=-1;MODE=Oracle
+    username: test
+    password:
+    driver-class-name: org.h2.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+    open-in-view: false
+
+# 이 파일은 main 의 application.yml 을 병합하지 않고 통째로 가린다.
+# main 에 있는 키라도 여기 없으면 미해석 placeholder 로 터진다. 전부 다시 적어야 한다.
+custom:
+  jwt:
+    secrets:
+      appkey: test-secret-key-for-mukkeu-hs256-must-be-32bytes-or-longer
+    exp-time:
+      access: 300000
+      refresh: 1209600000
+
+  cors:
+    allowed-origins: http://localhost:3000
+
+kakao:
+  api:
+    key: test-kakao-key
+    base-url: http://localhost:9999
