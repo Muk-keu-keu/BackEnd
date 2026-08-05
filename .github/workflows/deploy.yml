@@ -20,10 +20,12 @@ jobs:
           java-version: '21'
           cache: gradle
 
-      - name: 빌드 + 테스트
+      # 테스트는 CI 에서 돌리지 않는다. 테스트 전용 설정(src/test/resources)이
+      # 저장소에 없어 러너에서는 실제 DB 접속 정보를 찾지 못한다.
+      - name: 빌드 (테스트 제외)
         run: |
           chmod +x ./gradlew
-          ./gradlew clean build --no-daemon
+          ./gradlew clean build -x test --no-daemon
 
       - name: Docker Hub 로그인
         uses: docker/login-action@v3
