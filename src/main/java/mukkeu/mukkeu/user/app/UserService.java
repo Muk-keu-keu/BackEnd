@@ -1,7 +1,5 @@
 package mukkeu.mukkeu.user.app;
 
-import java.util.Optional;
-
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -70,31 +68,25 @@ public class UserService {
 			.filter(found -> passwordEncoder.matches(request.password(), found.getPassword()))
 			.orElseThrow(() -> new BusinessException(ErrorCode.INVALID_CREDENTIALS));   // 401
 
-		String refreshToken = resolveRefreshTokenOnLogin(user);
+		String refreshToken = issueRefreshTokenOnLogin(user);
 		String accessToken = jwtTokenProvider.issueAccessToken(user.getId(), user.getRole(), user.getEmail());
 
 		return toTokenResponse(accessToken, refreshToken);
 	}
 
 	/**
-	 * 기존 refresh token이 살아 있으면 재사용하고, 없거나 만료됐으면 새로 발급한다.
+	 * 로그인할 때마다 refresh token을 새로 발급해 이전 토큰을 무효화한다.
+	 * 살아 있는 토큰을 재사용하면 로그아웃이 실패했을 때 이전 토큰이 만료일까지 그대로 유효해진다.
 	 */
-	private String resolveRefreshTokenOnLogin(User user) {
-		Optional<RefreshToken> savedToken = refreshTokenRepository.findLatestByUserId(user.getId());
-
-		if (savedToken.isPresent()) {
-			RefreshToken token = savedToken.get();
-			if (jwtTokenProvider.validate(token.getRefreshToken())) {
-				return token.getRefreshToken();
-			}
-			// 만료된 경우 갱신 (더티 체킹)
-			String reissued = jwtTokenProvider.issueRefreshToken(user.getId(), user.getRole(), user.getEmail());
-			token.newSetRefreshToken(reissued);
-			return reissued;
-		}
-
+	private String issueRefreshTokenOnLogin(User user) {
 		String issued = jwtTokenProvider.issueRefreshToken(user.getId(), user.getRole(), user.getEmail());
-		refreshTokenRepository.save(new RefreshToken(issued, user.getId()));
+
+		refreshTokenRepository.findLatestByUserId(user.getId())
+			.ifPresentOrElse(
+				// 기존 행을 덮어쓴다 (더티 체킹)
+				token -> token.newSetRefreshToken(issued),
+				() -> refreshTokenRepository.save(new RefreshToken(issued, user.getId())));
+
 		return issued;
 	}
 
