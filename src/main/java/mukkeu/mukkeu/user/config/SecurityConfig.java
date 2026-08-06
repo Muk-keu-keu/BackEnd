@@ -52,7 +52,7 @@ public class SecurityConfig {
 
 			.authorizeHttpRequests(auth -> auth
 				// reissue는 access token이 이미 만료된 상태로 호출되므로 열어둔다
-				.requestMatchers("/v1/user/signup", "/v1/user/login", "/v1/user/reissue-token").permitAll()
+				.requestMatchers("/v1/users/signup", "/v1/users/login", "/v1/users/reissue-token").permitAll()
 				.requestMatchers("/admin/**").hasRole("ADMIN")
 				.anyRequest().authenticated())
 
