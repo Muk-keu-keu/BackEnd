@@ -25,7 +25,7 @@ import lombok.RequiredArgsConstructor;
  * 상태는 HTTP status code 로만 표현한다.
  */
 @RestController
-@RequestMapping("v1/user")
+@RequestMapping("v1/users")
 @RequiredArgsConstructor
 public class UserController {
 
