@@ -29,11 +29,4 @@ public class RestaurantRepositoryAdapter implements RestaurantRepository {
 	public List<Restaurant> findInBox(double minLat, double maxLat, double minLng, double maxLng) {
 		return restaurantJpaRepository.findAllByLatBetweenAndLngBetween(minLat, maxLat, minLng, maxLng);
 	}
-
-	@Override
-	public List<Restaurant> findByBrandNameInBox(String brandName,
-		double minLat, double maxLat, double minLng, double maxLng) {
-		return restaurantJpaRepository.findAllByBrandNameAndLatBetweenAndLngBetween(
-			brandName, minLat, maxLat, minLng, maxLng);
-	}
 }
