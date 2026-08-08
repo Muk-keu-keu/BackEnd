@@ -35,8 +35,8 @@ public class OrderRepositoryAdapter implements OrderRepository {
 	}
 
 	@Override
-	public List<Long> findCheckoutIdsByUserId(Long userId, int size) {
-		return orderJpaRepository.findCheckoutIdsByUserId(userId, size);
+	public List<Long> findCheckoutIdsByUserId(Long userId, Long cursor, int size) {
+		return orderJpaRepository.findCheckoutIdsByUserId(userId, cursor, size);
 	}
 
 	@Override
