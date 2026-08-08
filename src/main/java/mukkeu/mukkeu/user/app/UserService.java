@@ -15,6 +15,7 @@ import mukkeu.mukkeu.user.dto.DeleteUserRequest;
 import mukkeu.mukkeu.user.dto.LoginRequest;
 import mukkeu.mukkeu.user.dto.SignUpRequest;
 import mukkeu.mukkeu.user.dto.TokenResponse;
+import mukkeu.mukkeu.user.dto.UpdateNickNameRequest;
 import mukkeu.mukkeu.user.dto.UserResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -30,7 +31,7 @@ public class UserService {
 	private final JwtTokenProvider jwtTokenProvider;
 
 	/**
-	 * 회원가입 : 이메일 + 비밀번호 (비밀번호는 암호화해서 저장)
+	 * 회원가입
 	 */
 	@Transactional
 	public void signup(SignUpRequest request) {
@@ -59,7 +60,7 @@ public class UserService {
 	}
 
 	/**
-	 * 로그인 : access / refresh 토큰을 모두 응답 body로 내려준다. (앱 클라이언트)
+	 * 로그인 : access / refresh 토큰을 모두 응답 body로 내려준다.
 	 */
 	@Transactional
 	public TokenResponse login(LoginRequest request) {
@@ -76,7 +77,6 @@ public class UserService {
 
 	/**
 	 * 로그인할 때마다 refresh token을 새로 발급해 이전 토큰을 무효화한다.
-	 * 살아 있는 토큰을 재사용하면 로그아웃이 실패했을 때 이전 토큰이 만료일까지 그대로 유효해진다.
 	 */
 	private String issueRefreshTokenOnLogin(User user) {
 		String issued = jwtTokenProvider.issueRefreshToken(user.getId(), user.getRole(), user.getEmail());
@@ -92,7 +92,6 @@ public class UserService {
 
 	/**
 	 * access token 만료 시 앱이 보관하던 refresh token으로 재발급.
-	 * refresh token도 노출 가능성이 있으므로 사용한 뒤 함께 갱신한다.
 	 */
 	@Transactional
 	public TokenResponse reissue(String refreshToken) {
@@ -122,7 +121,7 @@ public class UserService {
 
 	/**
 	 * 로그아웃 : 서버에 저장된 refresh token을 지운다.
-	 * (Redis를 쓰지 않으므로 이미 발급된 access token은 만료 시간까지는 유효하다 → 앱에서도 삭제할 것)
+	 * (Redis를 쓰지 않으므로 이미 발급된 access token은 만료 시간까지는 유효)
 	 */
 	@Transactional
 	public void logout(Long userId) {
@@ -130,7 +129,17 @@ public class UserService {
 	}
 
 	/**
-	 * 회원 탈퇴 : 토큰 주인 + 입력한 이메일/비밀번호가 모두 일치해야 한다.
+	 * 닉네임 수정
+	 */
+	@Transactional
+	public void updateNickName(Long userId, UpdateNickNameRequest request) {
+		User user = userRepository.findById(userId)
+			.orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND));   // 404
+		user.updateNickName(request.nickName());
+	}
+
+	/**
+	 * 회원 탈퇴
 	 */
 	@Transactional
 	public void deleteUser(Long userId, DeleteUserRequest request) {
