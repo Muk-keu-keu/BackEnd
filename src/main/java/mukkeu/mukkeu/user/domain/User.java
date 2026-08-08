@@ -56,4 +56,8 @@ public class User extends BaseEntity {
 		user.nickName=nickName;
 		return user;
 	}
+
+	public void updateNickName(String nickName) {
+		this.nickName = nickName;
+	}
 }
