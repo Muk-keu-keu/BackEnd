@@ -3,6 +3,7 @@ package mukkeu.mukkeu.user.api;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -16,6 +17,7 @@ import mukkeu.mukkeu.user.dto.LoginRequest;
 import mukkeu.mukkeu.user.dto.ReissueRequest;
 import mukkeu.mukkeu.user.dto.SignUpRequest;
 import mukkeu.mukkeu.user.dto.TokenResponse;
+import mukkeu.mukkeu.user.dto.UpdateNickNameRequest;
 import mukkeu.mukkeu.user.dto.UserResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -65,6 +67,13 @@ public class UserController {
 	@GetMapping("/me")
 	public UserResponse me() {
 		return userService.getMyInfo(userContextService.getCurrentUserId());
+	}
+
+	/** 닉네임 수정 */
+	@ResponseStatus(HttpStatus.NO_CONTENT)
+	@PatchMapping("/me")
+	public void updateNickName(@RequestBody @Valid UpdateNickNameRequest request) {
+		userService.updateNickName(userContextService.getCurrentUserId(), request);
 	}
 
 	@ResponseStatus(HttpStatus.NO_CONTENT)
