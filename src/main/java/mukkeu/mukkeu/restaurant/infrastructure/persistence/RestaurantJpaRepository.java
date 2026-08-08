@@ -12,7 +12,4 @@ public interface RestaurantJpaRepository extends JpaRepository<Restaurant, Long>
 
 	List<Restaurant> findAllByLatBetweenAndLngBetween(
 		Double minLat, Double maxLat, Double minLng, Double maxLng);
-
-	List<Restaurant> findAllByBrandNameAndLatBetweenAndLngBetween(
-		String brandName, Double minLat, Double maxLat, Double minLng, Double maxLng);
 }
