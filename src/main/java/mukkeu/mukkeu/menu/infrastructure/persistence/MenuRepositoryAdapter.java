@@ -6,6 +6,7 @@ import java.util.Optional;
 import org.springframework.stereotype.Repository;
 
 import mukkeu.mukkeu.menu.domain.Menu;
+import mukkeu.mukkeu.menu.domain.MenuMatch;
 import mukkeu.mukkeu.menu.domain.repository.MenuRepository;
 import lombok.RequiredArgsConstructor;
 
@@ -23,7 +24,7 @@ public class MenuRepositoryAdapter implements MenuRepository {
 
 	@Override
 	public List<Menu> findAllByIdIn(List<Long> ids) {
-		return menuJpaRepository.findAllByIdIn(ids);
+		return ids.isEmpty() ? List.of() : menuJpaRepository.findAllByIdIn(ids);
 	}
 
 	@Override
@@ -33,12 +34,11 @@ public class MenuRepositoryAdapter implements MenuRepository {
 
 	@Override
 	public List<Menu> findAllByRestaurantIdIn(List<Long> restaurantIds) {
-		return menuJpaRepository.findAllByRestaurantIdIn(restaurantIds);
+		return restaurantIds.isEmpty() ? List.of() : menuJpaRepository.findAllByRestaurantIdIn(restaurantIds);
 	}
 
 	@Override
-	public List<Long> searchSimilarMenuIds(String queryText, List<Long> restaurantIds,
-		Integer maxSpiceRank, boolean excludeMeat, int limit) {
-		return menuVectorRepository.searchMenuIds(queryText, restaurantIds, maxSpiceRank, excludeMeat, limit);
+	public List<MenuMatch> searchSimilar(String queryText, List<Long> restaurantIds, Integer maxSpiceRank, boolean excludeMeat, int limit) {
+		return menuVectorRepository.search(queryText, restaurantIds, maxSpiceRank, excludeMeat, limit);
 	}
 }
