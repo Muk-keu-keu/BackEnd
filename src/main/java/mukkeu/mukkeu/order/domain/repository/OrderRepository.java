@@ -23,7 +23,7 @@ public interface OrderRepository {
 	 * 내역 목록 1단계 — 이번 페이지에 보여줄 결제 번호만 뽑는다.
 	 * 행 기준으로 자르면 묶음이 반으로 잘려 카드에 가게 하나만 뜬다.
 	 */
-	List<Long> findCheckoutIdsByUserId(Long userId, int size);
+	List<Long> findCheckoutIdsByUserId(Long userId, Long cursor, int size);
 
 	/** 내역 목록 2단계 — 그 결제들의 모든 가게 행 */
 	List<Order> findAllByCheckoutIdIn(List<Long> checkoutIds);
