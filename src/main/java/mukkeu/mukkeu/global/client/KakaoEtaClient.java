@@ -1,4 +1,4 @@
-package mukkeu.mukkeu.analysis.app;
+package mukkeu.mukkeu.global.client;
 
 import java.util.ArrayList;
 import java.util.HashMap;
