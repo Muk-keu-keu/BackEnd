@@ -56,3 +56,12 @@ kakao:
     key: ${KAKAO_NAVI_KEY}
     base-url: ${KAKAO_NAVI_URL}
 
+# OCI Object Storage. 요기족보 이미지 저장.
+#   par-url         쓰기용 Pre-Authenticated Request. 이 URL 자체가 인증이라 비밀이다.
+#                   유출되면 누구나 버킷에 파일을 올릴 수 있다.
+#   public-base-url 읽기용 공개 주소. 버킷 Visibility 가 Public 이어야 한다.
+oci:
+  storage:
+    par-url: ${OCI_PAR_UPLOAD_URL}
+    public-base-url: ${OCI_PUBLIC_BASE_URL}
+
