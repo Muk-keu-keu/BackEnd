@@ -84,9 +84,14 @@ public class PostController {
 	}
 
 	/**
-	 * 본인 글만 수정. 이미지는 최종 상태를 통째로 보낸다.
-	 *   data.keepImageUrls  남길 URL 을 원하는 순서로 (빠진 것은 삭제, 순서가 곧 재배열)
-	 *   images              새로 추가할 파일. keepImageUrls 뒤에 붙는다
+	 * 본인 글만 수정. 요청 모양이 작성과 같다 (checkoutId 만 없다).
+	 *
+	 * 이미지는 수정 후 남을 사진 전부를 images 파트에 파일로 다시 보낸다.
+	 * 기존 사진도 예외가 아니고, 받은 순서가 그대로 화면 순서가 된다.
+	 * 앱에서 드래그로 순서를 바꾸거나 사진 사이에 새 사진을 끼우는 동작이
+	 * 서버 쪽 특별한 처리 없이 그대로 반영된다.
+	 *
+	 * images 를 아예 안 보내면 사진 없는 글이 된다.
 	 */
 	@ResponseStatus(HttpStatus.OK)
 	@PatchMapping(value = "/{postId}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
