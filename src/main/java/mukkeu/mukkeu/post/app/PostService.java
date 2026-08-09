@@ -124,13 +124,21 @@ public class PostService {
 	/**
 	 * 본인 글만. 남의 글이면 403 이다 — 목록에 이미 공개돼 있어 숨길 것이 없다.
 	 *
-	 * 이미지는 최종 상태를 받아 통째로 다시 깐다. keepImageUrls 순서가 곧 새 sort_order 고,
-	 * 새 파일은 그 뒤에 붙는다. 행을 지웠다 다시 넣는 이유는, 남은 것만 골라 번호를
-	 * 다시 매기려면 어차피 전부 UPDATE 해야 해서 이득이 없기 때문이다.
+	 * 이미지는 최종 상태를 파일로 통째로 다시 받는다. 기존 사진도 예외가 아니다.
+	 * 받은 순서가 그대로 새 sort_order 가 된다.
 	 *
-	 * 목록에서 빠진 이미지는 DB 에서만 지우고 버킷 파일은 남긴다. 고아 파일이 쌓이지만
-	 * 지우다 실패하면 화면에 없는 사진 때문에 수정이 통째로 롤백된다. 저장 공간보다
-	 * 사용자가 글을 고칠 수 있는 쪽이 중요하다.
+	 * URL 목록(keepImageUrls)으로 받던 방식을 버린 이유:
+	 *   새 파일은 아직 URL 이 없어 목록 중간에 자리를 잡을 수 없었다. 그래서 결과가
+	 *   항상 "기존 사진들 + 새 파일들" 이었고, 사진 사이에 새 사진을 끼울 수 없었다.
+	 *   목록을 안 보내면 사진이 전부 지워지는 함정도 있었다.
+	 *   전부 파일로 받으면 작성과 요청 모양이 같아져 프론트가 화면 하나만 만들면 된다.
+	 *
+	 * 대가는 재업로드다. 사진을 안 건드리고 제목만 고쳐도 전부 다시 올라오고,
+	 * 버킷에는 같은 사진의 사본이 하나씩 쌓인다. 사진 몇 장 규모에서 감당 가능한
+	 * 비용이라고 보고 프론트 단순함을 택했다.
+	 *
+	 * 예전 이미지는 DB 에서만 지우고 버킷 파일은 남긴다. 지우다 실패하면 화면에 없는
+	 * 사진 때문에 수정이 통째로 롤백된다. 저장 공간보다 글을 고칠 수 있는 쪽이 중요하다.
 	 */
 	@Transactional
 	public PostDetailResponse update(Long userId, Long postId,
@@ -142,35 +150,22 @@ public class PostService {
 			throw new BusinessException(ErrorCode.FORBIDDEN_ACCESS);
 		}
 
-		// 폼 필드로 오므로 빈 값 한 줄이 [""] 로 들어올 수 있다. 그대로 두면
-		// "이 글 이미지가 맞나" 검사에 걸려 400 이 난다. 빈 값은 없는 것으로 본다.
-		List<String> keep = request.keepImageUrls() == null ? List.of()
-			: request.keepImageUrls().stream().filter(u -> u != null && !u.isBlank()).toList();
-		int newCount = images == null ? 0 : images.size();
-		if (keep.size() + newCount > MAX_IMAGES) {
+		if (images != null && images.size() > MAX_IMAGES) {
 			throw new BusinessException(ErrorCode.TOO_MANY_IMAGES);
-		}
-
-		// 남의 글 이미지 URL 을 keepImageUrls 에 넣어 가져오는 것을 막는다.
-		Set<String> owned = postImageRepository.findAllByPostId(postId).stream()
-			.map(PostImage::getImageUrl).collect(Collectors.toSet());
-		if (!owned.containsAll(keep)) {
-			throw new BusinessException(ErrorCode.INVALID_REQUEST_DATA);
 		}
 
 		post.update(request.title(), request.body());
 
-		List<String> uploaded = imageStorage.upload(images);
+		// 업로드를 먼저 한다. 실패하면 예외가 나가 트랜잭션이 통째로 되돌아가므로
+		// 기존 사진 행이 지워진 채로 남는 일이 없다.
+		List<String> urls = imageStorage.upload(images);
 
 		postImageRepository.deleteAllByPostId(postId);
-		List<String> finalUrls = new ArrayList<>(keep);
-		finalUrls.addAll(uploaded);
-
-		if (!finalUrls.isEmpty()) {
+		if (!urls.isEmpty()) {
 			List<PostImage> rows = new ArrayList<>();
-			for (int i = 0; i < finalUrls.size(); i++) {
+			for (int i = 0; i < urls.size(); i++) {
 				rows.add(PostImage.builder()
-					.postId(postId).imageUrl(finalUrls.get(i)).sortOrder(i).build());
+					.postId(postId).imageUrl(urls.get(i)).sortOrder(i).build());
 			}
 			postImageRepository.saveAll(rows);
 		}
