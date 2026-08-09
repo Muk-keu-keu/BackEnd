@@ -24,6 +24,8 @@ public enum ErrorCode {
 	RESTAURANT_NOT_FOUND(HttpStatus.NOT_FOUND, "가게를 찾을 수 없습니다."),
 	// 남의 주문도 여기로 온다. 403 을 주면 "그 번호의 주문이 존재한다" 는 사실이 새어 나간다.
 	ORDER_NOT_FOUND(HttpStatus.NOT_FOUND, "주문을 찾을 수 없습니다."),
+	POST_NOT_FOUND(HttpStatus.NOT_FOUND, "게시글을 찾을 수 없습니다."),
+	COMMENT_NOT_FOUND(HttpStatus.NOT_FOUND, "댓글을 찾을 수 없습니다."),
 
 	// 500
 	INTERNAL_SERVER_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "예기치 못한 오류가 발생했습니다."),
@@ -44,7 +46,20 @@ public enum ErrorCode {
 	LOGIN_USER_NOT_FOUND(HttpStatus.NOT_FOUND, "로그인 정보와 일치하는 사용자가 존재하지 않습니다."),
 
 	// 409
-	EMAIL_ALREADY_EXISTS(HttpStatus.CONFLICT, "이미 존재하는 이메일입니다.");
+	EMAIL_ALREADY_EXISTS(HttpStatus.CONFLICT, "이미 존재하는 이메일입니다."),
+
+	/*
+	 * 요기족보
+	 */
+	// 400
+	INVALID_IMAGE(HttpStatus.BAD_REQUEST, "이미지는 jpg/png/webp 형식의 5MB 이하만 올릴 수 있습니다."),
+	TOO_MANY_IMAGES(HttpStatus.BAD_REQUEST, "이미지는 최대 5장까지 올릴 수 있습니다."),
+
+	// 409
+	POST_ALREADY_EXISTS(HttpStatus.CONFLICT, "이미 이 주문으로 작성한 글이 있습니다."),
+
+	// 500
+	IMAGE_UPLOAD_FAILED(HttpStatus.INTERNAL_SERVER_ERROR, "이미지 업로드에 실패했습니다.");
 
 	private final HttpStatus status;
 	private final String message;
