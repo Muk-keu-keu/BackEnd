@@ -6,6 +6,7 @@ import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -51,8 +52,17 @@ public class SecurityConfig {
 			.sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
 
 			.authorizeHttpRequests(auth -> auth
+				// 컨트롤러가 아니라 서블릿 컨테이너가 부르는 내부 경로다. 400/415/500 이 나면
+				// 스프링이 그 응답을 만들려고 ERROR 디스패치로 /error 를 다시 태운다.
+				// 그런데 JwtAuthFilter(OncePerRequestFilter)는 ERROR 디스패치에서 기본적으로
+				// 건너뛰므로 그 시점엔 인증이 비어 있고, 여기가 막혀 있으면 진짜 원인(415 등)이
+				// 401 '인증이 필요합니다' 로 덮여 버린다. 디버깅이 불가능해진다.
+				.requestMatchers("/error").permitAll()
 				// reissue는 access token이 이미 만료된 상태로 호출되므로 열어둔다
 				.requestMatchers("/v1/users/signup", "/v1/users/login", "/v1/users/reissue-token").permitAll()
+				// 요기족보 조회는 비로그인도 허용한다. 토큰이 있으면 필터가 인증을 채워 주므로
+				// liked / mine 이 함께 내려가고, 없으면 전부 false 로 나간다.
+				.requestMatchers(HttpMethod.GET, "/v1/posts", "/v1/posts/*", "/v1/posts/*/comments").permitAll()
 				.requestMatchers("/admin/**").hasRole("ADMIN")
 				.anyRequest().authenticated())
 
