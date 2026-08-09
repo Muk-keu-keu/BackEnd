@@ -1,5 +1,6 @@
 package mukkeu.mukkeu.user.infrastructure.persistence;
 
+import java.util.List;
 import java.util.Optional;
 
 import org.springframework.stereotype.Repository;
@@ -22,6 +23,11 @@ public class UserRepositoryAdapter implements UserRepository {
 	@Override
 	public Optional<User> findById(Long id) {
 		return userJpaRepository.findById(id);
+	}
+
+	@Override
+	public List<User> findAllByIdIn(List<Long> ids) {
+		return userJpaRepository.findAllByIdIn(ids);
 	}
 
 	@Override
