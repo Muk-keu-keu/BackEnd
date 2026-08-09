@@ -20,9 +20,10 @@ import mukkeu.mukkeu.analysis.dto.AnalysisResponse.DishResult;
 import mukkeu.mukkeu.analysis.dto.AnalysisResponse.ExactMatch;
 import mukkeu.mukkeu.analysis.dto.AnalysisResponse.ItemResponse;
 import mukkeu.mukkeu.analysis.dto.AnalysisResponse.OptionResponse;
-import mukkeu.mukkeu.analysis.dto.AnalysisResponse.StoreResponse;
+import mukkeu.mukkeu.global.client.KakaoEtaClient;
 import mukkeu.mukkeu.global.exception.BusinessException;
 import mukkeu.mukkeu.global.exception.domain.ErrorCode;
+import mukkeu.mukkeu.global.support.GeoSupport;
 import mukkeu.mukkeu.menu.domain.Menu;
 import mukkeu.mukkeu.menu.domain.MenuMatch;
 import mukkeu.mukkeu.menu.domain.MenuOption;
@@ -31,6 +32,8 @@ import mukkeu.mukkeu.menu.app.OptionMatcher;
 import mukkeu.mukkeu.menu.domain.repository.MenuRepository;
 import mukkeu.mukkeu.restaurant.domain.Restaurant;
 import mukkeu.mukkeu.restaurant.domain.repository.RestaurantRepository;
+import mukkeu.mukkeu.restaurant.app.RestaurantSummaryFactory;
+import mukkeu.mukkeu.restaurant.dto.RestaurantSummary;
 import mukkeu.mukkeu.user.domain.User;
 import mukkeu.mukkeu.user.domain.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -483,7 +486,7 @@ public class AnalysisService {
 	}
 
 	/** 도착 예정 = 가게 조리시간 + 이동시간. 이동시간을 못 구했으면 원래 값을 둔다. */
-	private StoreResponse withEta(StoreResponse store, Map<Long, Restaurant> byId,
+	private RestaurantSummary withEta(RestaurantSummary store, Map<Long, Restaurant> byId,
 		Map<Long, Integer> travel) {
 
 		Integer minutes = travel.get(store.restaurantId());
@@ -493,19 +496,15 @@ public class AnalysisService {
 		Restaurant entity = byId.get(store.restaurantId());
 		int prep = (entity != null && entity.getPrepMin() != null) ? entity.getPrepMin() : 0;
 
-		return new StoreResponse(
-			store.restaurantId(), store.name(), store.foodCategory(), store.area(), store.rating(),
+		return new RestaurantSummary(
+			store.restaurantId(), store.name(), store.foodCategory(), store.area(), store.address(),
+			store.rating(), store.reviewCount(),
 			prep + minutes,
 			store.deliveryFee(), store.minOrderPrice(), store.distanceKm(), store.imageUrl());
 	}
 
-	private StoreResponse toStore(User user, Restaurant store) {
-		return new StoreResponse(
-			store.getId(), store.getName(), store.getFoodCategory(), store.getArea(), store.getRating(),
-			store.getDeliveryMin(),          // applyEta 가 실제 이동시간으로 덮어쓴다
-			store.getDeliveryFee(), store.getMinOrderPrice(),
-			Math.round(distanceTo(user, store) * 100) / 100.0,
-			store.getImageUrl());
+	private RestaurantSummary toStore(User user, Restaurant store) {
+		return RestaurantSummaryFactory.of(store, distanceTo(user, store), store.getDeliveryMin());
 	}
 
 	// ────────────────────────────────────────────────────────
