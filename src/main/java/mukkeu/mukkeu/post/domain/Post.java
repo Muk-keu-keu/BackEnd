@@ -72,6 +72,16 @@ public class Post extends BaseEntity {
 		this.commentCount = 0;
 	}
 
+	/**
+	 * 제목과 본문만 바꾼다. checkoutId 는 못 바꾼다 — 어느 결제를 자랑하는 글인지가
+	 * 이 글의 정체성이고, 옮기면 사실상 다른 글이다. uq_post_checkout 때문에
+	 * 대상 결제에 이미 글이 있으면 옮길 수도 없다.
+	 */
+	public void update(String title, String body) {
+		this.title = title;
+		this.body = body;
+	}
+
 	public void increaseLikeCount() {
 		this.likeCount++;
 	}
