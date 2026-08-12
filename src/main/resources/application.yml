@@ -65,3 +65,16 @@ oci:
     par-url: ${OCI_PAR_UPLOAD_URL}
     public-base-url: ${OCI_PUBLIC_BASE_URL}
 
+  # OCI Generative AI (xAI Grok). 분석 결과 요약 한 줄을 만든다.
+  #   api-key   OCI GenAI API 키. Bearer 로 보낸다. SDK·요청 서명이 필요 없다.
+  #   base-url  https://inference.generativeai.<region>.oci.oraclecloud.com/openai/v1
+  #             ★ 모델이 있는 리전이어야 한다. Grok 4.20 은 IAD/ORD/FRA 에 있고
+  #               우리 DB(ap-seoul-1)와 다르므로 왕복이 그만큼 더 걸린다.
+  #   model     추론 모델이 아니라 속도 우선 모델을 쓴다. 이 호출은 응답을 막고 있다.
+  # 값이 비어 있으면 클라이언트가 스스로 꺼지고 summary 는 항상 null 로 나간다.
+  genai:
+    api-key: ${OCI_GENAI_API_KEY:}
+    base-url: ${OCI_GENAI_BASE_URL:}
+    model: ${OCI_GENAI_MODEL:xai.grok-4.20-0309-non-reasoning}
+    timeout-seconds: ${OCI_GENAI_TIMEOUT_SECONDS:3}
+
