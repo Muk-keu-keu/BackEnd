@@ -1,5 +1,6 @@
 package mukkeu.mukkeu.analysis.api;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -20,6 +21,7 @@ import lombok.RequiredArgsConstructor;
 @RestController
 @RequestMapping("/v1/analyses")
 @RequiredArgsConstructor
+@Slf4j
 public class AnalysisController {
 
 	private final AnalysisService analysisService;
@@ -29,6 +31,7 @@ public class AnalysisController {
 	@ResponseStatus(HttpStatus.OK)
 	@PostMapping
 	public AnalysisResponse analyze(@RequestBody @Valid AnalysisRequest request) {
+		log.info("영상 분석 요청: {}", request);
 		return analysisService.analyze(userContextService.getCurrentUserId(), request);
 	}
 }
