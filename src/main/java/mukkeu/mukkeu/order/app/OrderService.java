@@ -183,6 +183,16 @@ public class OrderService {
 		orderRepository.findAllByCheckoutIdIn(checkoutIds)
 			.forEach(o -> byCheckout.get(o.getCheckoutId()).add(o));
 
+		// 카드의 "[지점명] 메뉴, 메뉴" 줄에 쓸 이름들. 이 페이지의 모든 행을 한 번에
+		// 읽어 온다 — 카드마다 부르면 페이지 크기만큼 쿼리가 늘어난다.
+		Map<Long, List<OrderItem>> itemsByOrder = orderItemRepository
+			.findAllByOrderIdIn(byCheckout.values().stream()
+				.flatMap(List::stream)
+				.map(Order::getId)
+				.toList())
+			.stream()
+			.collect(Collectors.groupingBy(OrderItem::getOrderId));
+
 		List<OrderListResponse.Card> cards = byCheckout.values().stream()
 			.filter(rows -> !rows.isEmpty())
 			.map(rows -> new OrderListResponse.Card(
@@ -190,7 +200,14 @@ public class OrderService {
 				toOffset(rows.get(0).getCreatedAt()),
 				toSource(rows.get(0)),
 				rows.stream().map(Order::getRestaurantName).toList(),
-				rows.stream().mapToInt(Order::getTotalPrice).sum()))
+				rows.stream().mapToInt(Order::getTotalPrice).sum(),
+				rows.stream()
+					.map(o -> new OrderListResponse.StoreMenus(
+						o.getRestaurantName(),
+						itemsByOrder.getOrDefault(o.getId(), List.of()).stream()
+							.map(OrderItem::getMenuName)
+							.toList()))
+					.toList()))
 			.toList();
 
 		// 받은 수가 요청보다 적으면 마지막 페이지다.
