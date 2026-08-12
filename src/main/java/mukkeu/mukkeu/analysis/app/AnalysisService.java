@@ -34,6 +34,7 @@ import mukkeu.mukkeu.menu.domain.MenuOption;
 import mukkeu.mukkeu.menu.domain.SpiceLevel;
 import mukkeu.mukkeu.menu.app.OptionMatcher;
 import mukkeu.mukkeu.menu.domain.repository.MenuRepository;
+import mukkeu.mukkeu.restaurant.domain.FoodCategory;
 import mukkeu.mukkeu.restaurant.domain.Restaurant;
 import mukkeu.mukkeu.restaurant.domain.repository.RestaurantRepository;
 import mukkeu.mukkeu.restaurant.app.RestaurantSummaryFactory;
@@ -212,7 +213,7 @@ public class AnalysisService {
 			int count = i < dishResults.size() ? dishResults.get(i).candidates().size() : 0;
 
 			summaries.add(new GrokSummaryClient.DishSummary(
-				dish.name(), exactStore, count,
+				dish.name(), dish.brandName(), exactStore, count,
 				count == 0 ? EmptyReason.NO_SIMILAR_MENU.name() : null));
 		}
 
@@ -418,9 +419,9 @@ public class AnalysisService {
 			return List.of();
 		}
 
+		// 요리마다 카테고리로 다시 좁히므로 여기서는 id 목록을 만들지 않는다.
 		Map<Long, Restaurant> byId = candidates.stream()
 			.collect(Collectors.toMap(Restaurant::getId, r -> r, (a, b) -> a, LinkedHashMap::new));
-		List<Long> storeIds = List.copyOf(byId.keySet());
 
 		Integer maxSpiceRank = maxSpiceRank(request.preferences());
 		boolean excludeMeat = request.preferences() != null && request.preferences().isExcludeMeat();
@@ -428,14 +429,31 @@ public class AnalysisService {
 		List<DishResult> results = new ArrayList<>();
 
 		for (AnalysisRequest.Dish dish : request.extracted().dishes()) {
-			results.add(searchOneDish(user, request, dish, storeIds, byId, maxSpiceRank, excludeMeat));
+			results.add(searchOneDish(user, request, dish, byId, maxSpiceRank, excludeMeat));
 		}
 		return results;
 	}
 
-	/** 요리 하나에 대해 후보 가게를 찾는다. 임베딩 API 호출은 여기서 정확히 1회다. */
+	/**
+	 * 요리 하나에 대해 후보 가게를 찾는다. 임베딩 API 호출은 여기서 정확히 1회다.
+	 *
+	 * dish.foodCategory 가 오면 그 카테고리 가게만 검색 대상으로 삼는다. 응답을 만든 뒤
+	 * 걸러내지 않고 검색 전에 좁히는 이유는 후보 수 때문이다. 벡터 검색은 유사도 상위
+	 * VECTOR_LIMIT 개만 가져오므로, 전부 검색한 뒤 카테고리로 거르면 그 안에 맞는 것이
+	 * 몇 개 없어 후보가 텅 빈다. 먼저 좁히면 그 카테고리 안에서 상위 개수를 채운다.
+	 *
+	 * 카테고리가 틀리면 정답 가게가 통째로 빠진다. 치킨집이 파는 치즈볼을 SNACK 으로
+	 * 분류하면 그 치킨집이 후보에서 사라진다. 그래서 브랜드가 잡힌 경우는 exactMatches
+	 * 가 따로 살려 준다. 값이 없거나 enum 에 없는 문자열이면 조건을 걸지 않는다.
+	 */
 	private DishResult searchOneDish(User user, AnalysisRequest request, AnalysisRequest.Dish dish,
-		List<Long> storeIds, Map<Long, Restaurant> byId, Integer maxSpiceRank, boolean excludeMeat) {
+		Map<Long, Restaurant> byId, Integer maxSpiceRank, boolean excludeMeat) {
+
+		List<Long> storeIds = storeIdsFor(dish, byId);
+		if (storeIds.isEmpty()) {
+			log.debug("요리 '{}' : 카테고리 {} 가게가 반경 안에 없다", dish.name(), dish.foodCategory());
+			return new DishResult(dish.name(), List.of());
+		}
 
 		List<MenuMatch> matches = menuRepository.searchSimilar(
 			buildQueryText(dish), storeIds, maxSpiceRank, excludeMeat, VECTOR_LIMIT);
@@ -536,6 +554,35 @@ public class AnalysisService {
 	private double score(double similarity, double optionMatchRatio) {
 		double raw = Math.max(0.0, similarity) * 0.9 + optionMatchRatio * 0.1;
 		return Math.round(raw * 100) / 100.0;
+	}
+
+	/**
+	 * 이 요리를 찾을 가게 목록. dish.foodCategory 가 유효한 enum 이름일 때만 좁힌다.
+	 *
+	 * 프론트가 보내는 값이라 오타나 우리가 모르는 분류가 올 수 있다. 그때 조건을 거는 대신
+	 * 무시하는 쪽을 택했다. 알 수 없는 값 때문에 결과가 0 개가 되면 사용자는 이유를 알 수 없다.
+	 */
+	private List<Long> storeIdsFor(AnalysisRequest.Dish dish, Map<Long, Restaurant> byId) {
+		FoodCategory wanted = parseCategory(dish.foodCategory());
+		if (wanted == null) {
+			return List.copyOf(byId.keySet());
+		}
+		return byId.values().stream()
+			.filter(r -> r.getFoodCategory() == wanted)
+			.map(Restaurant::getId)
+			.toList();
+	}
+
+	private static FoodCategory parseCategory(String value) {
+		if (value == null || value.isBlank()) {
+			return null;
+		}
+		try {
+			return FoodCategory.valueOf(value.trim().toUpperCase());
+		} catch (IllegalArgumentException e) {
+			log.debug("모르는 foodCategory '{}' 는 무시한다", value);
+			return null;
+		}
 	}
 
 	/** 프랜차이즈가 아니면 지점 중복이 없으므로 각자 다른 가게로 센다. */
