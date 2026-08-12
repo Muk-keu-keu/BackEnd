@@ -9,10 +9,13 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import org.springframework.stereotype.Service;
 
+import mukkeu.mukkeu.analysis.domain.EmptyReason;
 import mukkeu.mukkeu.analysis.dto.AnalysisRequest;
 import mukkeu.mukkeu.analysis.dto.AnalysisResponse;
 import mukkeu.mukkeu.analysis.dto.AnalysisResponse.Candidate;
@@ -20,6 +23,7 @@ import mukkeu.mukkeu.analysis.dto.AnalysisResponse.DishResult;
 import mukkeu.mukkeu.analysis.dto.AnalysisResponse.ExactMatch;
 import mukkeu.mukkeu.analysis.dto.AnalysisResponse.ItemResponse;
 import mukkeu.mukkeu.analysis.dto.AnalysisResponse.OptionResponse;
+import mukkeu.mukkeu.global.client.GrokSummaryClient;
 import mukkeu.mukkeu.global.client.KakaoEtaClient;
 import mukkeu.mukkeu.global.exception.BusinessException;
 import mukkeu.mukkeu.global.exception.domain.ErrorCode;
@@ -88,11 +92,19 @@ public class AnalysisService {
 	/** 요리 하나당 화면에 보여줄 후보 가게 수. */
 	private static final int MAX_CANDIDATES = 5;
 
+	/**
+	 * 요약을 기다려 주는 한계(초). 클라이언트 자체 read timeout 보다 살짝 길게 잡아
+	 * 평소에는 그쪽이 먼저 끊기게 한다. 여기 걸리는 것은 스레드가 밀렸을 때뿐이다.
+	 */
+	private static final int SUMMARY_WAIT_SECONDS = 4;
+
 	private final UserRepository userRepository;
 	private final RestaurantRepository restaurantRepository;
 	private final MenuRepository menuRepository;
 	private final OptionMatcher optionMatcher;
 	private final KakaoEtaClient kakaoEtaClient;
+	private final GrokSummaryClient grokSummaryClient;
+	private final MatchReasonTagger matchReasonTagger;
 
 	public AnalysisResponse analyze(Long userId, AnalysisRequest request) {
 
@@ -100,9 +112,13 @@ public class AnalysisService {
 			.orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND));
 
 		// ── ① 반경 5km. 거리순 정렬된 상태로 돌아온다 ──────────
-		List<Restaurant> nearby = findNearby(user, request.preferences());
+		List<Restaurant> inRadius = findInRadius(user);
+		if (inRadius.isEmpty()) {
+			return empty(EmptyReason.NO_NEARBY);
+		}
+		List<Restaurant> nearby = filterByDeliveryTime(inRadius, request.preferences());
 		if (nearby.isEmpty()) {
-			return new AnalysisResponse(List.of(), List.of());
+			return empty(EmptyReason.DELIVERY_TIME_FILTERED);
 		}
 
 		// ── ② Path A : 브랜드가 맞는 지점 ─────────────────────
@@ -111,14 +127,98 @@ public class AnalysisService {
 		// ── ③ Path B : 요리별 후보 가게 ───────────────────────
 		List<DishResult> dishResults = findDishResults(user, request, nearby, exactMatches);
 
-		// ── ④ 응답에 실린 가게만 실제 이동시간으로 바꾼다 ─────
-		return applyEta(user, nearby, exactMatches, dishResults);
+		// 아무것도 못 찾았으면 요약에 쓸 재료가 없다. 이유만 내려보낸다.
+		boolean nothingFound = exactMatches.isEmpty()
+			&& dishResults.stream().allMatch(d -> d.candidates().isEmpty());
+		if (nothingFound) {
+			return empty(EmptyReason.NO_SIMILAR_MENU);
+		}
+
+		// ── ④ 요약 생성을 먼저 띄운다 ─────────────────────────
+		// 요약에 필요한 값(요리명·브랜드 확정 여부·후보 개수)은 여기서 이미 다 정해졌고
+		// ETA 는 요약에 쓰지 않는다. 그래서 길찾기와 동시에 돌려도 결과가 달라지지 않는다.
+		// 순차로 부르면 두 왕복이 더해지지만, 겹쳐 두면 느린 쪽 하나로 끝난다.
+		CompletableFuture<String> summaryFuture = CompletableFuture.supplyAsync(
+			() -> grokSummaryClient.summarize(buildSummaryRequest(request, exactMatches, dishResults)));
+
+		// ── ⑤ 응답에 실린 가게만 실제 이동시간으로 바꾼다 ─────
+		AnalysisResponse response = applyEta(user, nearby, exactMatches, dishResults);
+
+		// ── ⑥ 카드마다 태그·문구를 붙인다 ────────────────────
+		//    거리·ETA 가 확정된 뒤여야 하고, 요리별 1등·최근접은 후보 전체가 모여야 정해진다.
+		response = matchReasonTagger.apply(response);
+
+		return withSummary(response, awaitSummary(summaryFuture));
+	}
+
+	/** 결과가 빈 응답. 이유를 함께 실어 프론트가 왜 비었는지 말할 수 있게 한다. */
+	private AnalysisResponse empty(EmptyReason reason) {
+		return new AnalysisResponse(null, reason, List.of(), List.of());
+	}
+
+	/** 요약은 부가 정보다. 못 받아도 검색 결과는 그대로 내보낸다. */
+	private String awaitSummary(CompletableFuture<String> future) {
+		try {
+			return future.get(SUMMARY_WAIT_SECONDS, TimeUnit.SECONDS);
+		} catch (Exception e) {
+			future.cancel(true);
+			log.warn("요약을 기다리지 못했다. summary 없이 내보낸다: {}", e.getMessage());
+			return null;
+		}
+	}
+
+	private AnalysisResponse withSummary(AnalysisResponse response, String summary) {
+		return new AnalysisResponse(summary, response.emptyReason(),
+			response.exactMatches(), response.dishResults());
+	}
+
+	/**
+	 * 요약에 넘길 최소 사실만 추린다.
+	 *
+	 * AnalysisResponse 를 통째로 넘기지 않는다. 가격·주소·score 까지 들어가면 모델이 그걸
+	 * 쓰려 들고, "2만원짜리 치킨이 있어요" 같은 문장이 나와 아래 카드와 어긋난다.
+	 * 요약을 쓰는 데 필요한 것은 요리 이름, 브랜드가 잡혔는지, 몇 개 찾았는지, 왜 0개인지뿐이다.
+	 */
+	private GrokSummaryClient.SummaryRequest buildSummaryRequest(AnalysisRequest request,
+		List<ExactMatch> exactMatches, List<DishResult> dishResults) {
+
+		List<AnalysisRequest.Dish> dishes = request.extracted().dishes();
+		List<GrokSummaryClient.DishSummary> summaries = new ArrayList<>();
+
+		for (int i = 0; i < dishes.size(); i++) {
+			AnalysisRequest.Dish dish = dishes.get(i);
+
+			// exactMatches 는 brandName 으로 묶여 있으므로 그대로 대조하면 된다.
+			String exactStore = dish.brandName() == null ? null : exactMatches.stream()
+				.filter(m -> dish.brandName().equals(m.brandName()))
+				.map(m -> m.restaurant().name())
+				.findFirst().orElse(null);
+
+			// findDishResults 가 dishes 순서대로 돌기 때문에 인덱스가 맞는다.
+			int count = i < dishResults.size() ? dishResults.get(i).candidates().size() : 0;
+
+			summaries.add(new GrokSummaryClient.DishSummary(
+				dish.name(), exactStore, count,
+				count == 0 ? EmptyReason.NO_SIMILAR_MENU.name() : null));
+		}
+
+		return new GrokSummaryClient.SummaryRequest(summaries, toSummaryPreferences(request.preferences()));
+	}
+
+	private GrokSummaryClient.Preferences toSummaryPreferences(AnalysisRequest.Preferences prefs) {
+		if (prefs == null) {
+			return null;
+		}
+		return new GrokSummaryClient.Preferences(
+			prefs.maxSpiceLevel() == null ? null : prefs.maxSpiceLevel().name(),
+			prefs.maxDeliveryMin(),
+			prefs.excludeMeat());
 	}
 
 	// ────────────────────────────────────────────────────────
 	//  ① 반경
 	// ────────────────────────────────────────────────────────
-	private List<Restaurant> findNearby(User user, AnalysisRequest.Preferences prefs) {
+	private List<Restaurant> findInRadius(User user) {
 		double lat = user.getLat();
 		double lng = user.getLng();
 		double dLat = GeoSupport.latDelta(SEARCH_RADIUS_KM);
@@ -128,13 +228,26 @@ public class AnalysisService {
 		List<Restaurant> box = restaurantRepository.findInBox(
 			lat - dLat, lat + dLat, lng - dLng, lng + dLng);
 
-		Integer maxDeliveryMin = prefs == null ? null : prefs.maxDeliveryMin();
-
 		return box.stream()
 			.filter(r -> distanceTo(user, r) <= SEARCH_RADIUS_KM)
-			.filter(r -> maxDeliveryMin == null
-				|| (r.getDeliveryMin() != null && r.getDeliveryMin() <= maxDeliveryMin))
 			.sorted(Comparator.comparingDouble(r -> distanceTo(user, r)))
+			.toList();
+	}
+
+	/**
+	 * 배달시간 조건을 반경 필터와 떼어 놓은 이유는 빈 결과의 원인을 구분하기 위해서다.
+	 * 한 스트림에서 같이 거르면 "근처에 가게가 없다" 와 "조건에 다 걸렸다" 가 똑같이 0개로
+	 * 보여서, 사용자에게 조건을 풀어 보라고 안내할지 말지를 정할 수 없다.
+	 */
+	private List<Restaurant> filterByDeliveryTime(List<Restaurant> inRadius,
+		AnalysisRequest.Preferences prefs) {
+
+		Integer maxDeliveryMin = prefs == null ? null : prefs.maxDeliveryMin();
+		if (maxDeliveryMin == null) {
+			return inRadius;
+		}
+		return inRadius.stream()
+			.filter(r -> r.getDeliveryMin() != null && r.getDeliveryMin() <= maxDeliveryMin)
 			.toList();
 	}
 
