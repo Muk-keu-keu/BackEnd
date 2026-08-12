@@ -34,8 +34,9 @@ import mukkeu.mukkeu.restaurant.dto.RestaurantSummary;
  * 태그가 없어도 카드에는 가게명·메뉴·가격·거리·ETA 가 다 있어 비어 보이지 않는다.
  *
  * ── DISTANCE 를 순위와 절대 기준 둘 다로 판정하는 이유 ──
- * 순위만 쓰면 5km 짜리도 "제일 가까움" 이 되고, 절대 기준만 쓰면 도심에서 후보 5장 전부에
- * 붙어 노이즈가 된다. 둘을 겹치면 요리당 최대 2장으로 자연히 묶이면서 거짓말도 안 된다.
+ * 거리·ETA 는 카드에 숫자로 이미 나가 있다. 그래서 "0.45km, 24분이면 와요" 같은 문구는
+ * 카드를 되읽어 줄 뿐 정보량이 0 이다. 대신 후보들 사이의 순위를 말한다 — 그건 카드가
+ * 보여줄 수 없는 사실이고, 요리당 한 장뿐이라 희소해서 눈에 들어온다.
  */
 @Component
 public class MatchReasonTagger {
@@ -43,8 +44,14 @@ public class MatchReasonTagger {
 	/** 이 안쪽이어야 "가깝다" 고 말한다. */
 	private static final double NEAR_KM = 1.5;
 
-	/** 그 요리 후보 중 거리 상위 몇 위까지 DISTANCE 를 줄지. */
-	private static final int NEAR_RANK = 2;
+	/**
+	 * 1등 점수와 이만큼 안쪽인 후보만 "이 요리의 후보" 로 인정한다.
+	 *
+	 * 이 게이트가 없으면 거리만으로 배지가 붙어, 떡볶이 검색에 올라온 마라탕집이
+	 * 가깝다는 이유로 추천처럼 보인다. 실제로 그런 응답이 나왔다.
+	 * 유사도가 처지는 후보는 애초에 거리를 자랑할 자격이 없다.
+	 */
+	private static final double RELEVANCE_GAP = 0.05;
 
 	/** 한 카드에 실을 태그 수. 넘치면 문구가 길어져 카드가 부푼다. */
 	private static final int MAX_TAGS = 2;
@@ -89,13 +96,15 @@ public class MatchReasonTagger {
 				.map(c -> c.restaurant().restaurantId())
 				.orElse(null);
 
+		// 유사도가 1등과 비슷한 후보만 거리 경쟁에 올린다. 그중 딱 한 장에만 붙인다.
+		double topScore = candidates.stream().mapToDouble(Candidate::score).max().orElse(0.0);
 		Set<Long> nearIds = candidates.stream()
+			.filter(c -> c.score() >= topScore - RELEVANCE_GAP)
 			.filter(c -> c.restaurant().distanceKm() != null)
 			.filter(c -> c.restaurant().distanceKm() <= NEAR_KM)
-			.sorted(Comparator.comparingDouble(c -> c.restaurant().distanceKm()))
-			.limit(NEAR_RANK)
-			.map(c -> c.restaurant().restaurantId())
-			.collect(Collectors.toSet());
+			.min(Comparator.comparingDouble(c -> c.restaurant().distanceKm()))
+			.map(c -> Set.of(c.restaurant().restaurantId()))
+			.orElse(Set.of());
 
 		return new DishResult(dish.dishName(), candidates.stream()
 			.map(c -> tagCandidate(c, dish.dishName(), topScoreId, nearIds))
@@ -145,7 +154,6 @@ public class MatchReasonTagger {
 
 		String option = optionLabel(item);
 		String dish = dishName == null ? null : dishName + particleWa(dishName);
-		String km = distanceLabel(store);
 
 		return switch (first) {
 			case EXACT_MATCH -> second == MatchReasonTag.OPTION_MATCH && option != null
@@ -160,27 +168,21 @@ public class MatchReasonTagger {
 					case TASTE_SIMILAR -> dish == null
 						? option + "도 맞고 가장 비슷해요"
 						: option + "도 맞고 영상 속 " + dish + " 가장 비슷해요";
-					case DISTANCE -> km == null
-						? option + "까지 맞출 수 있어요"
-						: option + "도 맞고 " + km + "로 가까워요";
+					case DISTANCE -> option + "도 맞고 제일 가까워요";
 					case null, default -> option + "까지 맞출 수 있어요";
 				};
 			}
 
 			case TASTE_SIMILAR -> {
-				if (second == MatchReasonTag.DISTANCE && km != null) {
-					yield "가장 비슷하고 " + km + "로 가까워요";
+				if (second == MatchReasonTag.DISTANCE) {
+					yield "가장 비슷하면서 제일 가까워요";
 				}
 				yield dish == null ? "영상 속 요리와 가장 비슷해요" : "영상 속 " + dish + " 가장 비슷해요";
 			}
 
-			case DISTANCE -> {
-				if (km == null) {
-					yield null;
-				}
-				Integer eta = store.etaMin();
-				yield eta == null ? km + "로 가까워요" : km + ", " + eta + "분이면 와요";
-			}
+			// 거리·ETA 는 카드에 숫자로 이미 있다. 그대로 되읽어 주면 정보량이 0 이라
+			// 후보들 사이의 순위라는, 카드가 보여줄 수 없는 사실만 말한다.
+			case DISTANCE -> "후보 중 제일 가까워요";
 		};
 	}
 
@@ -191,11 +193,6 @@ public class MatchReasonTagger {
 		}
 		List<String> names = item.options().stream().map(OptionResponse::name).toList();
 		return names.size() == 1 ? names.get(0) : names.get(0) + " 외 " + (names.size() - 1) + "개";
-	}
-
-	private String distanceLabel(RestaurantSummary store) {
-		Double km = store.distanceKm();
-		return km == null ? null : km + "km";
 	}
 
 	private boolean hasPickedOption(List<ItemResponse> items) {
