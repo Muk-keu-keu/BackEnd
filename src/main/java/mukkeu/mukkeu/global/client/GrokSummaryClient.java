@@ -52,9 +52,11 @@ public class GrokSummaryClient {
 		2. "~해요" 톤. 사과하거나 변명하지 않는다.
 		3. 입력 JSON 에 있는 사실만 쓴다. 맛 평가·별점·가격·리뷰·조리법은 언급 금지.
 		4. exactStore 가 있는 요리는 그 가게에서 그대로 시킬 수 있다는 점을 먼저 말한다.
+		   이때 요리는 brandName 으로 부르고, 가게는 exactStore 를 통째로 쓴다. 줄이지 않는다.
 		5. candidateCount 가 0 인 요리는 반드시 언급하고, emptyReason 에 맞는 이유를 덧붙인다.
-		6. 후보 가게 이름은 나열하지 않는다. 가게 이름은 exactStore 만 쓴다.
-		7. 숫자는 입력에 있는 값만 쓴다. 새로 만들지 않는다.
+		6. candidateCount 가 1 이상인 요리는 그 개수를 숫자로 밝힌다. "많아요" 처럼 뭉개지 않는다.
+		7. 후보 가게 이름은 나열하지 않는다. 가게 이름은 exactStore 만 쓴다.
+		8. 숫자는 입력에 있는 값만 쓴다. 새로 만들지 않는다.
 
 		[emptyReason]
 		NO_NEARBY               반경 안에 가게가 없음
@@ -71,16 +73,17 @@ public class GrokSummaryClient {
 	 */
 	private static final List<Message> FEW_SHOT = List.of(
 		new Message("user", """
-			{"dishes":[{"name":"엽기떡볶이","exactStore":"동대문엽기떡볶이 신촌점","candidateCount":5},\
+			{"dishes":[{"name":"떡볶이","brandName":"엽기떡볶이","exactStore":"동대문엽기떡볶이 신촌점","candidateCount":5},\
 			{"name":"마라탕","candidateCount":0,"emptyReason":"DELIVERY_TIME_FILTERED"}],\
 			"preferences":{"maxDeliveryMin":30}}"""),
 		new Message("assistant",
-			"{\"summary\":\"영상 속 엽기떡볶이는 신촌점에서 그대로 주문할 수 있어요. 마라탕은 배달 30분 안에 오는 곳이 없었어요\"}"),
+			"{\"summary\":\"영상 속 엽기떡볶이는 동대문엽기떡볶이 신촌점에서 그대로 시킬 수 있어요."
+				+ " 마라탕은 배달 30분 안에 오는 곳이 없었어요\"}"),
 		new Message("user", """
 			{"dishes":[{"name":"후라이드치킨","candidateCount":3},\
 			{"name":"감자튀김","candidateCount":4}],"preferences":{}}"""),
 		new Message("assistant",
-			"{\"summary\":\"영상에 나온 브랜드는 근처에 없지만, 비슷한 맛으로 시킬 수 있는 곳을 요리마다 찾았어요\"}"));
+			"{\"summary\":\"영상에 나온 브랜드는 근처에 없지만, 후라이드치킨 3곳과 감자튀김 4곳을 찾았어요\"}"));
 
 	/** 90자 제한이므로 이 이상은 필요 없다. */
 	private static final int MAX_TOKENS = 150;
@@ -94,6 +97,7 @@ public class GrokSummaryClient {
 	private final RestClient restClient;
 	private final ObjectMapper objectMapper;
 	private final String apiKey;
+	private final String baseUrl;
 	private final String model;
 	private final boolean enabled;
 
@@ -105,6 +109,7 @@ public class GrokSummaryClient {
 		ObjectMapper objectMapper) {
 
 		this.apiKey = apiKey;
+		this.baseUrl = baseUrl;
 		this.model = model;
 		this.objectMapper = objectMapper;
 		this.enabled = !apiKey.isBlank() && !baseUrl.isBlank();
@@ -119,8 +124,11 @@ public class GrokSummaryClient {
 			.requestFactory(factory)
 			.build();
 
-		if (!enabled) {
-			log.info("OCI GenAI 설정이 없다. 분석 요약(summary)은 항상 null 로 나간다.");
+		// 켜졌든 꺼졌든 항상 남긴다. "조용히 아무 일도 안 함" 은 진단할 수가 없다.
+		if (enabled) {
+			log.info("분석 요약 ON  model={} baseUrl={} key={}", model, baseUrl, mask(apiKey));
+		} else {
+			log.warn("분석 요약 OFF (summary 는 항상 null). apiKey={} baseUrl={}", apiKey.isBlank() ? "없음" : "있음", baseUrl.isBlank() ? "없음" : baseUrl);
 		}
 	}
 
@@ -129,7 +137,12 @@ public class GrokSummaryClient {
 	 *         호출자는 null 을 정상 흐름으로 처리해야 한다.
 	 */
 	public String summarize(SummaryRequest request) {
-		if (!enabled || request == null || request.dishes() == null || request.dishes().isEmpty()) {
+		if (!enabled) {
+			log.debug("분석 요약이 꺼져 있어 건너뛴다. 기동 로그의 '분석 요약 OFF' 를 확인하라.");
+			return null;
+		}
+		if (request == null || request.dishes() == null || request.dishes().isEmpty()) {
+			log.debug("요약에 넘길 요리가 없다.");
 			return null;
 		}
 
@@ -162,10 +175,24 @@ public class GrokSummaryClient {
 			}
 			return summary;
 
+		} catch (org.springframework.web.client.RestClientResponseException e) {
+			// 403 이면 IAM 정책, 404 면 리전·모델명, 401 이면 키 자체를 의심한다.
+			log.warn("분석 요약 호출 실패 status={} body={}",
+				e.getStatusCode(), e.getResponseBodyAsString());
+			return null;
 		} catch (Exception e) {
-			log.warn("분석 요약 생성 실패. summary 없이 진행한다: {}", e.getMessage());
+			log.warn("분석 요약 생성 실패({}). summary 없이 진행한다: {}",
+				e.getClass().getSimpleName(), e.getMessage());
 			return null;
 		}
+	}
+
+	/** 로그에 키를 통째로 남기지 않는다. 앞뒤만 보여도 어느 키인지는 알아볼 수 있다. */
+	private static String mask(String key) {
+		if (key == null || key.length() < 10) {
+			return "***";
+		}
+		return key.substring(0, 6) + "..." + key.substring(key.length() - 4);
 	}
 
 	private String extractContent(ChatResponse response) {
@@ -190,6 +217,8 @@ public class GrokSummaryClient {
 		try {
 			SummaryBody body = objectMapper.readValue(content.substring(from, to + 1), SummaryBody.class);
 			if (body == null || body.summary() == null || body.summary().isBlank()) {
+				// JSON 은 맞는데 summary 키가 없다. 모델이 형식을 어겼거나 오류 본문이 왔다.
+				log.warn("요약 응답에 summary 가 없다: {}", content);
 				return null;
 			}
 			return body.summary().trim();
@@ -210,6 +239,7 @@ public class GrokSummaryClient {
 	@JsonInclude(JsonInclude.Include.NON_NULL)
 	public record DishSummary(
 		String name,
+		String brandName,         // 영상에서 부른 브랜드. 없으면 null
 		String exactStore,        // 브랜드 매칭 성공 시 지점명, 실패면 null
 		int candidateCount,
 		String emptyReason        // candidateCount == 0 일 때만
