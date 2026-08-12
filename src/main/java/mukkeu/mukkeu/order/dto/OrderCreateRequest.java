@@ -26,7 +26,15 @@ import jakarta.validation.constraints.PositiveOrZero;
  */
 public record OrderCreateRequest(
 
-	@Valid @NotNull Source source,
+	/**
+	 * 출처 영상. **null 이 올 수 있다.**
+	 *
+	 * 족보 글에 영상이 안 붙어 있거나(글쓴이가 링크 없이 올린 경우) 예전 결제를
+	 * "다시 주문" 할 때는 앱이 보낼 영상이 없다. order 의 source_* 컬럼은 전부
+	 * nullable 이라 저장에는 문제가 없는데, 여기서만 필수로 막으면 그 두 흐름이
+	 * 400 으로 죽는다.
+	 */
+	@Valid Source source,
 	@Valid @NotEmpty List<Store> stores
 ) {
 

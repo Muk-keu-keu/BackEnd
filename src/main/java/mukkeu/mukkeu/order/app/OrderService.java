@@ -118,10 +118,12 @@ public class OrderService {
 			.restaurantId(store.restaurantId())
 			.restaurantName(store.restaurantName())
 			.deliveryFee(store.deliveryFee())
-			.sourcePlatform(source.platform())
-			.sourceUrl(source.url())
-			.sourceThumbnail(source.thumbnailUrl())
-			.sourceTitle(source.title())
+			// 출처 영상이 없는 결제가 있다(다시 주문, 영상 없는 족보). 컬럼이 전부
+			// nullable 이므로 그대로 비워 둔다.
+			.sourcePlatform(source == null ? null : source.platform())
+			.sourceUrl(source == null ? null : source.url())
+			.sourceThumbnail(source == null ? null : source.thumbnailUrl())
+			.sourceTitle(source == null ? null : source.title())
 			.itemsTotal(store.itemsTotal())
 			.totalPrice(store.subtotal())
 			.build();
