@@ -93,6 +93,20 @@ public class AnalysisService {
 	private static final int MAX_CANDIDATES = 5;
 
 	/**
+	 * 후보로 인정할 최소 유사도(1 - 코사인 거리).
+	 *
+	 * 벡터 검색은 "가장 가까운 N개" 를 줄 뿐 "충분히 가까운가" 는 답하지 않는다.
+	 * 이 값이 없으면 반경 안에 치킨집이 없을 때 한식집 메뉴가 1등으로 올라오고,
+	 * MAX_CANDIDATES 가 남은 칸까지 채워 카드 다섯 장이 전부 무관해진다.
+	 *
+	 * ★ 이 값은 실제 데이터로 재서 정해야 한다. 지금 값은 "확실한 쓰레기만 버린다"
+	 *   쪽으로 낮게 잡은 시작점이다. 임베딩 모델(cohere.embed-v4.0)은 무관한 짧은
+	 *   문장에도 0.2~0.4 를 주기 때문에, 높이면 정상 후보까지 사라져 결과가 비는
+	 *   쪽이 더 나쁜 실패다. 순서를 바로잡는 일은 categoryRank 가 맡는다.
+	 */
+	private static final double MIN_SIMILARITY = 0.30;
+
+	/**
 	 * 요약을 기다려 주는 한계(초). 클라이언트 자체 read timeout 보다 살짝 길게 잡아
 	 * 평소에는 그쪽이 먼저 끊기게 한다. 여기 걸리는 것은 스레드가 밀렸을 때뿐이다.
 	 */
@@ -435,6 +449,7 @@ public class AnalysisService {
 
 		// 가게당 하나만 남긴다. matches 가 유사도순이라 먼저 만난 것이 그 가게의 최선이다.
 		Map<Long, Candidate> bestPerStore = new LinkedHashMap<>();
+		int dropped = 0;
 
 		for (MenuMatch match : matches) {
 			Menu menu = menuById.get(match.menuId());
@@ -445,6 +460,13 @@ public class AnalysisService {
 			if (store == null || bestPerStore.containsKey(store.getId())) {
 				continue;
 			}
+			// 무관한 메뉴는 여기서 버린다. 벡터 검색은 "가장 가까운 N개" 를 줄 뿐
+			// "충분히 가까운가" 는 답하지 않는다. 동네에 치킨집이 없으면 한식집 메뉴가
+			// 그대로 1등으로 올라오고, 아래 MAX_CANDIDATES 가 남은 칸까지 채운다.
+			if (match.similarity() < MIN_SIMILARITY) {
+				dropped++;
+				continue;
+			}
 			// 이 요리의 옵션만 넘긴다. 다른 요리 옵션을 섞으면 토스트에 떡볶이용
 			// "치즈 추가" 가 켜져 결제액이 조용히 올라간다.
 			ScoredItem scored = toItem(menu, dish.options(), request);
@@ -453,12 +475,35 @@ public class AnalysisService {
 				score(match.similarity(), scored.optionMatchRatio())));
 		}
 
+		if (dropped > 0) {
+			log.debug("'{}' 후보 {}개를 유사도 미달로 버렸다 (기준 {})", dish.name(), dropped, MIN_SIMILARITY);
+		}
+
+		// 같은 카테고리를 앞에 세운다. 점수만으로 줄을 세우면 치킨 질의에서 0.01 앞선
+		// 한식집이 치킨집을 제친다. 카테고리는 요청에 실려 오는 값인데 지금까지
+		// 어디에서도 쓰이지 않았다.
 		List<Candidate> top = bestPerStore.values().stream()
-			.sorted(Comparator.comparingDouble(Candidate::score).reversed())
+			.sorted(Comparator.comparingInt((Candidate c) -> categoryRank(dish, c))
+				.thenComparing(Candidate::score, Comparator.reverseOrder()))
 			.limit(MAX_CANDIDATES)
 			.toList();
 
 		return new DishResult(dish.name(), top);
+	}
+
+	/**
+	 * 요리 카테고리와 가게 카테고리가 같으면 0, 아니면 1. 정렬 1순위다.
+	 *
+	 * 같지 않다고 버리지는 않는다. 분식집이 파는 치킨처럼 카테고리가 어긋나도 좋은
+	 * 후보가 있고, 추출이 카테고리를 못 정하면 null 로 오기 때문이다. 버리는 일은
+	 * 유사도(MIN_SIMILARITY)가 맡고 카테고리는 순서만 정한다.
+	 */
+	private int categoryRank(AnalysisRequest.Dish dish, Candidate candidate) {
+		String wanted = normalize(dish.foodCategory());
+		if (wanted.isEmpty() || candidate.restaurant().foodCategory() == null) {
+			return 1;
+		}
+		return wanted.equalsIgnoreCase(candidate.restaurant().foodCategory().name()) ? 0 : 1;
 	}
 
 	/**
