@@ -557,14 +557,19 @@ public class AnalysisService {
 	}
 
 	/**
-	 * 이 요리를 찾을 가게 목록. dish.foodCategory 가 유효한 enum 이름일 때만 좁힌다.
+	 * 이 요리를 찾을 가게 목록. dish.foodCategory 를 알아들었을 때만 좁힌다.
+	 * 표기를 해석하는 규칙은 FoodCategory.from 에 있다 — 'CHICKEN' 도 '치킨' 도 같은 값이 된다.
 	 *
 	 * 프론트가 보내는 값이라 오타나 우리가 모르는 분류가 올 수 있다. 그때 조건을 거는 대신
 	 * 무시하는 쪽을 택했다. 알 수 없는 값 때문에 결과가 0 개가 되면 사용자는 이유를 알 수 없다.
 	 */
 	private List<Long> storeIdsFor(AnalysisRequest.Dish dish, Map<Long, Restaurant> byId) {
-		FoodCategory wanted = parseCategory(dish.foodCategory());
+		FoodCategory wanted = FoodCategory.from(dish.foodCategory());
 		if (wanted == null) {
+			// 값이 온 것 자체는 맞는데 못 알아들은 경우만 남긴다. 안 보낸 것은 정상이라 조용히 넘어간다.
+			if (dish.foodCategory() != null && !dish.foodCategory().isBlank()) {
+				log.debug("모르는 foodCategory '{}' 는 무시한다", dish.foodCategory());
+			}
 			return List.copyOf(byId.keySet());
 		}
 		return byId.values().stream()
@@ -573,17 +578,6 @@ public class AnalysisService {
 			.toList();
 	}
 
-	private static FoodCategory parseCategory(String value) {
-		if (value == null || value.isBlank()) {
-			return null;
-		}
-		try {
-			return FoodCategory.valueOf(value.trim().toUpperCase());
-		} catch (IllegalArgumentException e) {
-			log.debug("모르는 foodCategory '{}' 는 무시한다", value);
-			return null;
-		}
-	}
 
 	/** 프랜차이즈가 아니면 지점 중복이 없으므로 각자 다른 가게로 센다. */
 	private static String brandKey(Restaurant restaurant) {
