@@ -223,7 +223,7 @@ public class PostService {
 
 		List<PostListResponse.Card> cards = posts.stream()
 			.map(p -> new PostListResponse.Card(
-				p.getId(), p.getTitle(),
+				p.getId(), p.getTitle(), p.getBody(),
 				thumbnailByPost.get(p.getId()),
 				nickNameByUser.get(p.getUserId()),
 				toOffset(p.getCreatedAt()),
