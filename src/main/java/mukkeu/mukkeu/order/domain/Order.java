@@ -68,7 +68,7 @@ public class Order extends BaseEntity {
 	@Column(name = "source_thumbnail", length = 1000)
 	private String sourceThumbnail;
 
-	@Column(name = "source_title", length = 300)
+	@Column(name = "source_title", length = 4000)
 	private String sourceTitle;
 
 	// ── 금액 ──
