@@ -59,7 +59,13 @@ public enum ErrorCode {
 	POST_ALREADY_EXISTS(HttpStatus.CONFLICT, "이미 이 주문으로 작성한 글이 있습니다."),
 
 	// 500
-	IMAGE_UPLOAD_FAILED(HttpStatus.INTERNAL_SERVER_ERROR, "이미지 업로드에 실패했습니다.");
+	IMAGE_UPLOAD_FAILED(HttpStatus.INTERNAL_SERVER_ERROR, "이미지 업로드에 실패했습니다."),
+
+	/*
+	 * 주문 : 결제 관련 예외 처리
+	 */
+	// 400
+	SOURCE_TITLE_TOO_LONG(HttpStatus.BAD_REQUEST, "출처 제목이 너무 깁니다. 4000바이트(UTF-8 기준) 이하로 줄여주세요.");
 
 	private final HttpStatus status;
 	private final String message;
