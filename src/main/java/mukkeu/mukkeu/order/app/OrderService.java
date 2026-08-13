@@ -1,5 +1,6 @@
 package mukkeu.mukkeu.order.app;
 
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
@@ -53,6 +54,8 @@ public class OrderService {
 
 	/** created_at 이 LocalDateTime 이라 지역 정보가 없다. 내보낼 때만 옷을 입힌다. */
 	private static final ZoneId KST = ZoneId.of("Asia/Seoul");
+	/** orders.source_title 컬럼 폭(바이트, UTF-8 기준)과 반드시 같아야 한다. */
+	private static final int SOURCE_TITLE_MAX_BYTES = 4000;
 
 	private final OrderRepository orderRepository;
 	private final OrderItemRepository orderItemRepository;
@@ -70,6 +73,10 @@ public class OrderService {
 	 */
 	@Transactional
 	public OrderCreateResponse create(Long userId, OrderCreateRequest request) {
+
+		// DB 컬럼 폭을 넘는 source_title 은 여기서 400 으로 끊는다.
+		// 그대로 insert 까지 가면 ORA-12899 로 죽는데 500 으로만 보이고 원인을 알 수 없다.
+		validateSourceTitle(request.source());
 
 		// 결제 한 번에 한 번만 뽑는다. 반복문 안에서 부르면 가게마다 번호가 달라져 묶임이 깨진다.
 		Long checkoutId = orderRepository.nextCheckoutId();
@@ -94,6 +101,21 @@ public class OrderService {
 
 		return new OrderCreateResponse(
 			request.stores().stream().map(OrderCreateRequest.Store::restaurantName).toList());
+	}
+
+	/**
+	 * source_title 이 DB 컬럼(byte 기준)을 넘으면 미리 막는다.
+	 * Instagram og:title 은 캡션 전문이라 길 수 있고, String.length() 로는 한글·이모지 때문에
+	 * 실제 저장 바이트 수를 못 재서 UTF-8 인코딩 길이로 직접 잰다.
+	 */
+	private void validateSourceTitle(OrderCreateRequest.Source source) {
+		if (source == null || source.title() == null) {
+			return;
+		}
+		int byteLength = source.title().getBytes(StandardCharsets.UTF_8).length;
+		if (byteLength > SOURCE_TITLE_MAX_BYTES) {
+			throw new BusinessException(ErrorCode.SOURCE_TITLE_TOO_LONG);
+		}
 	}
 
 	private Map<Long, Menu> loadMenus(OrderCreateRequest request) {
