@@ -63,6 +63,18 @@ public class GlobalExceptionHandler {
 		return ResponseEntity.status(code.getStatus()).body(ErrorResponse.of(code, path(request)));
 	}
 
+	/**
+	 * 위에서 못 잡은 예외의 마지막 방어선.
+	 * 이게 없으면 스프링 기본 에러 응답이 나가는데 code·message 필드가 아예 없어서
+	 * 클라이언트가 어느 필드가 문제인지 알 수 없다.
+	 */
+	@ExceptionHandler(Exception.class)
+	public ResponseEntity<ErrorResponse> handleUnexpected(Exception e, HttpServletRequest request) {
+		log.error("처리되지 않은 예외 발생: {} {}", path(request), e.getMessage(), e);
+		ErrorCode code = ErrorCode.INTERNAL_SERVER_ERROR;
+		return ResponseEntity.status(code.getStatus()).body(ErrorResponse.of(code, path(request)));
+	}
+
 	private String path(HttpServletRequest request) {
 		return request.getMethod() + " " + request.getRequestURI();
 	}
