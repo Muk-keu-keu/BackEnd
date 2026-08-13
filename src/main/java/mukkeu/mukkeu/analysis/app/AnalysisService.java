@@ -127,13 +127,9 @@ public class AnalysisService {
 			.orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND));
 
 		// ── ① 반경 5km. 거리순 정렬된 상태로 돌아온다 ──────────
-		List<Restaurant> inRadius = findInRadius(user);
-		if (inRadius.isEmpty()) {
-			return empty(EmptyReason.NO_NEARBY);
-		}
-		List<Restaurant> nearby = filterByDeliveryTime(inRadius, request.preferences());
+		List<Restaurant> nearby = findInRadius(user);
 		if (nearby.isEmpty()) {
-			return empty(EmptyReason.DELIVERY_TIME_FILTERED);
+			return empty(EmptyReason.NO_NEARBY);
 		}
 
 		// ── ② Path A : 브랜드가 맞는 지점 ─────────────────────
@@ -157,7 +153,17 @@ public class AnalysisService {
 			() -> grokSummaryClient.summarize(buildSummaryRequest(request, exactMatches, dishResults)));
 
 		// ── ⑤ 응답에 실린 가게만 실제 이동시간으로 바꾼다 ─────
-		AnalysisResponse response = applyEta(user, nearby, exactMatches, dishResults);
+		Integer maxDeliveryMin = request.preferences() == null ? null : request.preferences().maxDeliveryMin();
+		AnalysisResponse response = applyEta(user, nearby, exactMatches, dishResults, maxDeliveryMin);
+
+		// ── ⑤-1 배달시간 조건은 실제 etaMin 이 나온 뒤에 건다 ──
+		// delivery_min(가게가 적어 둔 고정값)으로 매칭 전에 걸렀더니, 화면에 보여줄
+		// etaMin 이 계산되기도 전에 가게가 통째로 빠지는 문제가 있었다. 이 필터는
+		// applyEta 뒤 매칭된 소수 가게에만 적용되므로 카카오 호출 비용에는 영향이 없다.
+		response = filterByMaxDeliveryMin(response, maxDeliveryMin);
+		if (isEmpty(response)) {
+			return empty(EmptyReason.DELIVERY_TIME_FILTERED);
+		}
 
 		// ── ⑥ 카드마다 태그·문구를 붙인다 ────────────────────
 		//    거리·ETA 가 확정된 뒤여야 하고, 요리별 1등·최근접은 후보 전체가 모여야 정해진다.
@@ -250,20 +256,55 @@ public class AnalysisService {
 	}
 
 	/**
-	 * 배달시간 조건을 반경 필터와 떼어 놓은 이유는 빈 결과의 원인을 구분하기 위해서다.
-	 * 한 스트림에서 같이 거르면 "근처에 가게가 없다" 와 "조건에 다 걸렸다" 가 똑같이 0개로
-	 * 보여서, 사용자에게 조건을 풀어 보라고 안내할지 말지를 정할 수 없다.
+	 * 배달시간 조건을 실제 etaMin 이 계산된 뒤에 건다.
+	 *
+	 * 예전에는 매칭 전에 delivery_min(가게가 적어 둔 고정값)으로 걸렀다. 목데이터
+	 * delivery_min 은 실제 거리·조리시간과 무관해서, 카카오 실측으로는 금방 올 수 있는
+	 * 가게가 이 단계에서 먼저 빠지는 문제가 있었다. exactMatches/dishResults 는 이미
+	 * 매칭된 소수라 여기서 걸러도 반경 전체를 다시 도는 게 아니다.
 	 */
-	private List<Restaurant> filterByDeliveryTime(List<Restaurant> inRadius,
-		AnalysisRequest.Preferences prefs) {
+	private AnalysisResponse filterByMaxDeliveryMin(AnalysisResponse response,
+		Integer maxDeliveryMin) {
 
-		Integer maxDeliveryMin = prefs == null ? null : prefs.maxDeliveryMin();
 		if (maxDeliveryMin == null) {
-			return inRadius;
+			return response;
 		}
-		return inRadius.stream()
-			.filter(r -> r.getDeliveryMin() != null && r.getDeliveryMin() <= maxDeliveryMin)
+
+		List<ExactMatch> filteredExact = response.exactMatches().stream()
+			.filter(m -> withinMaxDeliveryMin(m.restaurant(), maxDeliveryMin))
 			.toList();
+
+		List<DishResult> filteredDish = response.dishResults().stream()
+			.map(d -> new DishResult(d.dishName(), d.candidates().stream()
+				.filter(c -> withinMaxDeliveryMin(c.restaurant(), maxDeliveryMin))
+				.toList()))
+			.toList();
+
+		return new AnalysisResponse(filteredExact, filteredDish);
+	}
+
+	/**
+	 * prep_min 만으로 이미 maxDeliveryMin 을 넘으면 카카오를 부를 필요가 없다.
+	 * 이동시간이 0분이어도 결과가 뻔하기 때문이다. prep_min 이 없는 가게는 판단할
+	 * 근거가 없으니 일단 불러본다(true).
+	 */
+	private boolean canPossiblyMeetDeliveryMin(Restaurant restaurant, Integer maxDeliveryMin) {
+		if (maxDeliveryMin == null) {
+			return true;
+		}
+		Integer prep = restaurant.getPrepMin();
+		return prep == null || prep <= maxDeliveryMin;
+	}
+
+	/** etaMin 을 못 구한 가게(길찾기 실패 + delivery_min 도 없음)는 조건을 통과시키지 않는다. */
+	private boolean withinMaxDeliveryMin(RestaurantSummary store, int maxDeliveryMin) {
+		return store.etaMin() != null && store.etaMin() <= maxDeliveryMin;
+	}
+
+	/** 매칭도, 배달시간 필터도 통과한 카드가 하나도 없는지. */
+	private boolean isEmpty(AnalysisResponse response) {
+		return response.exactMatches().isEmpty()
+			&& response.dishResults().stream().allMatch(d -> d.candidates().isEmpty());
 	}
 
 	// ────────────────────────────────────────────────────────
@@ -653,7 +694,7 @@ public class AnalysisService {
 	 * 유지한다. 부가 정보 하나 때문에 검색 결과 전체를 버릴 이유가 없다.
 	 */
 	private AnalysisResponse applyEta(User user, List<Restaurant> nearby,
-		List<ExactMatch> exactMatches, List<DishResult> dishResults) {
+		List<ExactMatch> exactMatches, List<DishResult> dishResults, Integer maxDeliveryMin) {
 
 		Set<Long> ids = new LinkedHashSet<>();
 		exactMatches.forEach(m -> ids.add(m.restaurant().restaurantId()));
@@ -665,7 +706,14 @@ public class AnalysisService {
 		Map<Long, Restaurant> byId = nearby.stream()
 			.collect(Collectors.toMap(Restaurant::getId, r -> r, (a, b) -> a));
 
-		List<Restaurant> targets = ids.stream().map(byId::get).filter(Objects::nonNull).toList();
+		// etaMin = prep_min + 이동시간이고 이동시간은 0 밑으로 못 내려간다.
+		// prep_min 만으로 이미 maxDeliveryMin 을 넘는 가게는 이동시간이 0분이어도
+		// 탈락이 확정이라 카카오를 부를 필요가 없다.
+		List<Restaurant> targets = ids.stream()
+			.map(byId::get)
+			.filter(Objects::nonNull)
+			.filter(r -> canPossiblyMeetDeliveryMin(r, maxDeliveryMin))
+			.toList();
 		Map<Long, Integer> travel =
 			kakaoEtaClient.travelMinutes(user.getLat(), user.getLng(), targets);
 		if (travel.isEmpty()) {
