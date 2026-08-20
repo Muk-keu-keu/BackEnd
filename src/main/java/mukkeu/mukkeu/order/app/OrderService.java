@@ -13,6 +13,8 @@ import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import mukkeu.mukkeu.credit.app.CreditService;
+import mukkeu.mukkeu.credit.domain.CreditPlan;
 import mukkeu.mukkeu.global.exception.BusinessException;
 import mukkeu.mukkeu.global.exception.domain.ErrorCode;
 import mukkeu.mukkeu.menu.app.OptionMatcher;
@@ -28,6 +30,8 @@ import mukkeu.mukkeu.order.dto.OrderCreateResponse;
 import mukkeu.mukkeu.order.dto.OrderDetailResponse;
 import mukkeu.mukkeu.order.dto.OrderListResponse;
 import mukkeu.mukkeu.order.dto.SourceResponse;
+import mukkeu.mukkeu.restaurant.domain.Restaurant;
+import mukkeu.mukkeu.restaurant.domain.repository.RestaurantRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import tools.jackson.databind.ObjectMapper;
@@ -60,6 +64,8 @@ public class OrderService {
 	private final OrderRepository orderRepository;
 	private final OrderItemRepository orderItemRepository;
 	private final MenuRepository menuRepository;
+	private final RestaurantRepository restaurantRepository;
+	private final CreditService creditService;
 	private final OptionMatcher optionMatcher;
 	private final ObjectMapper objectMapper;
 
@@ -78,6 +84,21 @@ public class OrderService {
 		// 그대로 insert 까지 가면 ORA-12899 로 죽는데 500 으로만 보이고 원인을 알 수 없다.
 		validateSourceTitle(request.source());
 
+		// 같은 가게가 두 번 실려 오면 포인트가 두 번 계산돼 금액이 틀린다.
+		validateNoDuplicateStore(request);
+
+		Map<Long, Integer> minByRestaurantId = loadMinOrderPrices(request);
+		boolean usePrepaid = request.isUsePrepaid();
+
+		// 포인트를 쓰지 않는 결제는 지금까지와 똑같다. 미달이면 여기서 끊는다.
+		if (!usePrepaid) {
+			validateMinOrderPrice(request, minByRestaurantId);
+		}
+
+		// 가게별 금액을 확정한다. usePrepaid=false 면 잔액을 건드리지 않고 계산만 돌려준다.
+		Map<Long, CreditPlan> plans = creditService.apply(
+			userId, toCreditInputs(request, minByRestaurantId), usePrepaid);
+
 		// 결제 한 번에 한 번만 뽑는다. 반복문 안에서 부르면 가게마다 번호가 달라져 묶임이 깨진다.
 		Long checkoutId = orderRepository.nextCheckoutId();
 
@@ -85,7 +106,8 @@ public class OrderService {
 		Map<Long, Menu> menuById = loadMenus(request);
 
 		List<Order> orders = request.stores().stream()
-			.map(store -> toOrder(checkoutId, userId, request.source(), store))
+			.map(store -> toOrder(checkoutId, userId, request.source(), store,
+				plans.get(store.restaurantId())))
 			.toList();
 		List<Order> saved = orderRepository.saveAll(orders);
 
@@ -99,8 +121,46 @@ public class OrderService {
 		}
 		orderItemRepository.saveAll(items);
 
+		return toCreateResponse(request, plans);
+	}
+
+	/** 응답의 포인트 값은 전부 CreditPlan 에서 뽑는다. 화면은 pointDelta 하나만 쓴다. */
+	private OrderCreateResponse toCreateResponse(OrderCreateRequest request,
+		Map<Long, CreditPlan> plans) {
+
+		List<OrderCreateResponse.StorePoint> points = request.stores().stream()
+			.map(store -> {
+				CreditPlan plan = plans.get(store.restaurantId());
+				return new OrderCreateResponse.StorePoint(store.restaurantId(),
+					store.restaurantName(), plan.usedPoint(), plan.earnedPoint(),
+					plan.balanceAfter());
+			})
+			.toList();
+
+		int pointDelta = plans.values().stream().mapToInt(CreditPlan::balanceDelta).sum();
+		int paidCash = plans.values().stream().mapToInt(CreditPlan::payAmount).sum();
+
 		return new OrderCreateResponse(
-			request.stores().stream().map(OrderCreateRequest.Store::restaurantName).toList());
+			request.stores().stream().map(OrderCreateRequest.Store::restaurantName).toList(),
+			pointDelta, paidCash, points);
+	}
+
+	/**
+	 * 같은 restaurantId 가 두 번 실려 오면 막는다.
+	 *
+	 * 포인트 계산이 가게 단위라, 한 결제에 같은 가게가 두 줄로 들어오면 잔액을 두 번 읽고
+	 * 두 번 차감하게 된다. 프론트는 가게당 한 줄로 묶어 보내므로 정상 흐름에서는 생기지 않지만,
+	 * 조용히 틀린 금액이 저장되는 것보다 400 이 낫다.
+	 */
+	private void validateNoDuplicateStore(OrderCreateRequest request) {
+		long distinct = request.stores().stream()
+			.map(OrderCreateRequest.Store::restaurantId)
+			.distinct()
+			.count();
+		if (distinct != request.stores().size()) {
+			log.info("같은 가게가 중복으로 실린 결제 요청을 막았다");
+			throw new BusinessException(ErrorCode.INVALID_REQUEST_DATA);
+		}
 	}
 
 	/**
@@ -118,6 +178,60 @@ public class OrderService {
 		}
 	}
 
+	/**
+	 * 가게마다 최소 주문 금액을 채웠는지 본다. 배달비는 빼고 음식값(itemsTotal)으로만 판정한다 —
+	 * 배달비까지 쳐주면 최소 주문 금액이 사실상 낮아져 가게가 정한 조건과 달라진다.
+	 *
+	 * 이 검사가 없으면 미달 주문이 그대로 저장된다. 서버가 금액을 다시 계산하지 않기로 한
+	 * 결정(OrderCreateRequest 주석) 때문에 클라이언트가 보낸 값을 그대로 믿는데,
+	 * 최소 주문 금액은 가게가 정한 조건이라 클라이언트 판단에 맡길 수 없다.
+	 *
+	 * 값이 비어 있는 가게(min_order_price NULL)는 조건이 없는 것으로 본다. 모르는 값에
+	 * 조건을 걸어 결제를 막는 것보다, 걸지 않고 통과시키는 편이 실패 방향이 낫다.
+	 */
+	private void validateMinOrderPrice(OrderCreateRequest request,
+		Map<Long, Integer> minByRestaurantId) {
+
+		for (OrderCreateRequest.Store store : request.stores()) {
+			Integer min = minByRestaurantId.get(store.restaurantId());
+			if (min != null && store.itemsTotal() < min) {
+				log.info("최소 주문 미달로 결제를 막았다: store={} itemsTotal={} min={}",
+					store.restaurantName(), store.itemsTotal(), min);
+				throw new BusinessException(ErrorCode.BELOW_MIN_ORDER_PRICE);
+			}
+		}
+	}
+
+	/**
+	 * 가게별 최소 주문 금액. 결제 전체에서 한 번만 읽는다.
+	 *
+	 * 값이 비어 있는 가게(min_order_price NULL)는 표에 넣지 않는다 — 조건이 없는 것으로 본다.
+	 * 모르는 값에 조건을 걸어 결제를 막는 것보다, 걸지 않고 통과시키는 편이 실패 방향이 낫다.
+	 */
+	private Map<Long, Integer> loadMinOrderPrices(OrderCreateRequest request) {
+		List<Long> restaurantIds = request.stores().stream()
+			.map(OrderCreateRequest.Store::restaurantId)
+			.distinct()
+			.toList();
+
+		return restaurantRepository.findAllByIdIn(restaurantIds).stream()
+			.filter(r -> r.getMinOrderPrice() != null)
+			.collect(Collectors.toMap(Restaurant::getId, Restaurant::getMinOrderPrice, (a, b) -> a));
+	}
+
+	/** 포인트 계산에 넘길 가게별 입력. 최소 주문 금액이 없는 가게는 0 으로 둔다(조건 없음). */
+	private List<CreditService.StoreInput> toCreditInputs(OrderCreateRequest request,
+		Map<Long, Integer> minByRestaurantId) {
+
+		return request.stores().stream()
+			.map(store -> new CreditService.StoreInput(
+				store.restaurantId(),
+				store.itemsTotal(),
+				minByRestaurantId.getOrDefault(store.restaurantId(), 0),
+				store.deliveryFee()))
+			.toList();
+	}
+
 	private Map<Long, Menu> loadMenus(OrderCreateRequest request) {
 		List<Long> menuIds = request.stores().stream()
 			.flatMap(s -> s.items().stream())
@@ -132,7 +246,7 @@ public class OrderService {
 	}
 
 	private Order toOrder(Long checkoutId, Long userId,
-		OrderCreateRequest.Source source, OrderCreateRequest.Store store) {
+		OrderCreateRequest.Source source, OrderCreateRequest.Store store, CreditPlan plan) {
 
 		return Order.builder()
 			.checkoutId(checkoutId)
@@ -147,7 +261,10 @@ public class OrderService {
 			.sourceThumbnail(source == null ? null : source.thumbnailUrl())
 			.sourceTitle(source == null ? null : source.title())
 			.itemsTotal(store.itemsTotal())
+			// total_price 의 뜻은 그대로 둔다(items_total + delivery_fee).
+			// 실제 결제 현금은 total_price + point_delta 로 나온다.
 			.totalPrice(store.subtotal())
+			.pointDelta(plan.balanceDelta())
 			.build();
 	}
 
@@ -276,7 +393,7 @@ public class OrderService {
 			.map(o -> new OrderDetailResponse.Store(
 				o.getRestaurantId(), o.getRestaurantName(), o.getDeliveryFee(),
 				itemsByOrder.getOrDefault(o.getId(), List.of()).stream().map(this::toItem).toList(),
-				o.getItemsTotal(), o.getTotalPrice()))
+				o.getItemsTotal(), o.getTotalPrice(), o.getPointDelta()))
 			.toList();
 
 		return new OrderDetailResponse(
@@ -284,7 +401,9 @@ public class OrderService {
 			toOffset(orders.get(0).getCreatedAt()),
 			toSource(orders.get(0)),
 			stores,
-			orders.stream().mapToInt(Order::getTotalPrice).sum());
+			orders.stream().mapToInt(Order::getTotalPrice).sum(),
+			orders.stream().mapToInt(Order::getPointDelta).sum(),
+			orders.stream().mapToInt(Order::paidCash).sum());
 	}
 
 	private OrderDetailResponse.Item toItem(OrderItem item) {
