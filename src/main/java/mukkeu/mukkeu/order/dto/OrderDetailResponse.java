@@ -17,7 +17,16 @@ public record OrderDetailResponse(
 	OffsetDateTime orderedAt,
 	SourceResponse source,
 	List<Store> stores,
-	int totalPrice                       // stores 의 subtotal 합
+	int totalPrice,                      // stores 의 subtotal 합
+
+	/**
+	 * 이 결제로 채움 포인트 잔액이 변한 양. 음수면 포인트를 쓴 것이다.
+	 * 화면은 이 값 하나만 보여준다 — "포인트 5,000원 사용".
+	 */
+	int pointDelta,
+
+	/** 실제로 결제된 현금 = totalPrice + pointDelta. 잔액이 넉넉했으면 0 일 수 있다. */
+	int paidCash
 ) {
 
 	public record Store(
@@ -26,7 +35,8 @@ public record OrderDetailResponse(
 		int deliveryFee,
 		List<Item> items,
 		int itemsTotal,
-		int subtotal                     // itemsTotal + deliveryFee
+		int subtotal,                    // itemsTotal + deliveryFee
+		int pointDelta                   // 이 가게에서 움직인 포인트 순액
 	) {
 	}
 
