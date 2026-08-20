@@ -65,7 +65,10 @@ public enum ErrorCode {
 	 * 주문 : 결제 관련 예외 처리
 	 */
 	// 400
-	SOURCE_TITLE_TOO_LONG(HttpStatus.BAD_REQUEST, "출처 제목이 너무 깁니다. 4000바이트(UTF-8 기준) 이하로 줄여주세요.");
+	SOURCE_TITLE_TOO_LONG(HttpStatus.BAD_REQUEST, "출처 제목이 너무 깁니다. 4000바이트(UTF-8 기준) 이하로 줄여주세요."),
+	// 채움 포인트를 쓰지 않는 결제인데 최소 주문 금액을 못 채운 가게가 있을 때.
+	// usePrepaid=true 로 다시 보내면 미달분을 포인트로 선불하고 결제할 수 있다.
+	BELOW_MIN_ORDER_PRICE(HttpStatus.BAD_REQUEST, "최소 주문 금액을 채우지 못한 가게가 있습니다.");
 
 	private final HttpStatus status;
 	private final String message;
