@@ -80,10 +80,23 @@ public class Order extends BaseEntity {
 	@Column(name = "total_price", nullable = false)
 	private Integer totalPrice;
 
+	/**
+	 * 이 주문으로 채움 포인트 잔액이 변한 양. 양수면 적립이 우세, 음수면 사용이 우세다.
+	 *
+	 * 사용액과 적립액을 따로 두지 않는다. 둘은 늘 같은 주문에서 상계되고, 사용자가 보는
+	 * 값도 상계된 순액 하나뿐이다("포인트 3,000원 사용").
+	 *
+	 * total_price 의 뜻은 바뀌지 않는다(items_total + delivery_fee).
+	 * 실제로 결제된 현금은 total_price + point_delta 로 나온다.
+	 */
+	@Column(name = "point_delta", nullable = false)
+	private Integer pointDelta;
+
 	@Builder
 	private Order(Long checkoutId, Long userId, Long restaurantId, String restaurantName,
 		Integer deliveryFee, SourcePlatform sourcePlatform, String sourceUrl,
-		String sourceThumbnail, String sourceTitle, Integer itemsTotal, Integer totalPrice) {
+		String sourceThumbnail, String sourceTitle, Integer itemsTotal, Integer totalPrice,
+		Integer pointDelta) {
 		this.checkoutId = checkoutId;
 		this.userId = userId;
 		this.restaurantId = restaurantId;
@@ -95,5 +108,12 @@ public class Order extends BaseEntity {
 		this.sourceTitle = sourceTitle;
 		this.itemsTotal = itemsTotal;
 		this.totalPrice = totalPrice;
+		// 포인트를 쓰지 않은 결제는 0 이다. null 을 그대로 두면 NOT NULL 제약에 걸린다.
+		this.pointDelta = pointDelta == null ? 0 : pointDelta;
+	}
+
+	/** 실제로 결제된 현금. 포인트를 쓰지 않았으면 total_price 와 같다. */
+	public int paidCash() {
+		return totalPrice + pointDelta;
 	}
 }
