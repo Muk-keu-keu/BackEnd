@@ -6,6 +6,7 @@ import java.util.Map;
 
 import org.springframework.stereotype.Service;
 
+import mukkeu.mukkeu.credit.app.CreditService;
 import mukkeu.mukkeu.global.client.KakaoEtaClient;
 import mukkeu.mukkeu.global.exception.BusinessException;
 import mukkeu.mukkeu.global.exception.domain.ErrorCode;
@@ -41,6 +42,7 @@ public class MenuBoardService {
 	private final MenuRepository menuRepository;
 	private final OptionMatcher optionMatcher;
 	private final KakaoEtaClient kakaoEtaClient;
+	private final CreditService creditService;
 
 	public MenuBoardResponse getBoard(Long userId, Long restaurantId) {
 
@@ -54,7 +56,10 @@ public class MenuBoardService {
 			.map(this::toItem)
 			.toList();
 
-		return new MenuBoardResponse(toSummary(userId, store), menus);
+		// 비로그인이면 null. 0 으로 채우지 않는다 — "포인트가 없다" 와 "누구인지 모른다" 는 다르다.
+		Integer creditBalance = userId == null ? null : creditService.balanceOf(userId, restaurantId);
+
+		return new MenuBoardResponse(toSummary(userId, store), creditBalance, menus);
 	}
 
 	/**
