@@ -17,11 +17,22 @@ import mukkeu.mukkeu.restaurant.dto.RestaurantSummary;
  * 붙는다. 프론트가 앞 화면 값을 들고 다니게 하면 새로고침 한 번에 사라지고,
  * 이 API 를 딥링크로 바로 열 수도 없다.
  *
+ * creditBalance 는 RestaurantSummary 가 아니라 여기 최상위에 둔다. RestaurantSummary 는
+ * 먹방요기 응답에도 실려서, 거기에 넣으면 분석 API 의 응답 모양까지 바뀐다. 잔액은
+ * 메뉴판을 여는 이 화면에서만 필요하다.
+ *
  * 맵기·고기 같은 preferences 필터를 걸지 않는다. 사용자가 직접 메뉴판을 열어
  * 고르는 화면이므로, 서버가 선택지를 미리 지우면 "왜 이 메뉴가 없지" 가 된다.
  */
 public record MenuBoardResponse(
 	RestaurantSummary restaurant,
+
+	/**
+	 * 이 가게에 남은 채움 포인트. 비로그인이면 null, 거래가 없었으면 0 이다.
+	 * 화면은 0 이하면 배지를 통째로 숨긴다.
+	 */
+	Integer creditBalance,
+
 	List<MenuItem> menus
 ) {
 
