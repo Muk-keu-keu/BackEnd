@@ -7,13 +7,24 @@ package mukkeu.mukkeu.credit.domain;
  * 서버·앱·테스트가 같은 답을 낸다.
  *
  * ── 계산 규칙 ──────────────────────────────────────────────
- *   base        = max(itemsTotal, minOrderPrice)   가게가 받을 음식값
- *   shortfall   = base - itemsTotal                음식 대신 포인트로 돌려받는 부분
- *   payable     = base + deliveryFee               이번 결제에 필요한 총액
- *   usedPoint   = min(balance, payable)            ★ 포인트를 먼저, 배달비까지 전부
- *   payAmount   = payable - usedPoint              실제로 낼 현금
- *   earnedPoint = shortfall
- *   newBalance  = balance - usedPoint + earnedPoint
+ *   effectiveMin = max(0, minOrderPrice - balance)  ★ 포인트가 최소주문을 낮춘다
+ *   base         = max(itemsTotal, effectiveMin)    가게가 받을 음식값
+ *   shortfall    = base - itemsTotal                음식 대신 포인트로 돌려받는 부분
+ *   payable      = base + deliveryFee               이번 결제에 필요한 총액
+ *   usedPoint    = min(balance, payable)            포인트를 먼저, 배달비까지 전부
+ *   payAmount    = payable - usedPoint              실제로 낼 현금
+ *   earnedPoint  = shortfall
+ *   newBalance   = balance - usedPoint + earnedPoint
+ *
+ * ★ 포인트는 최소주문을 '채우는' 것이 아니라 '낮춘다'.
+ *   잔액 9,000 인 사람에게 최소주문 14,000 은 사실상 5,000 이다. 이미 그 가게에 낸
+ *   돈이 9,000 만큼 있기 때문이다.
+ *
+ *   채우는 방식으로 하면 같은 상황에서 포인트 9,000 을 쓰고 9,000 을 도로 적립받아
+ *   잔액이 그대로 남고 현금만 5,000 이 나간다. 회계는 맞지만 "포인트가 있는데 왜
+ *   현금을 내지" 가 된다. 낮추는 방식은 현금 0 원에 포인트가 5,000 줄어든다 —
+ *   **가게가 인식하는 매출은 5,000 으로 양쪽이 같다.** 채우는 방식의 9,000 은
+ *   장부에서 나갔다 들어올 뿐 남는 것이 없다.
  *
  * ★ 포인트를 payable(음식값 + 배달비) 까지 쓴다.
  *   미달분에 포인트를 쓰면 그만큼 증발하는 것 아니냐는 의심이 들지만, 그렇지 않다.
@@ -31,14 +42,14 @@ package mukkeu.mukkeu.credit.domain;
  *   이게 깨지면 어딘가에서 돈이 생기거나 사라진다. CreditPlanTest 가 검사한다.
  *
  * ── 검산 (배달비 2,000 기준) ──────────────────────────────
- *   1회차    items  8,000 / min 15,000 / bal      0
- *            → used      0, earned  7,000, pay 17,000, 잔액 →  7,000
- *   2회차    items  9,000 / min 15,000 / bal  7,000
- *            → used  7,000, earned  6,000, pay 10,000, 잔액 →  6,000
- *   충족     items 20,000 / min 15,000 / bal  6,000
- *            → used  6,000, earned      0, pay 16,000, 잔액 →      0
- *   잔액과다 items  3,000 / min 15,000 / bal 20,000
- *            → used 17,000, earned 12,000, pay      0, 잔액 → 15,000  (결제 0원)
+ *   1회차    items  5,000 / min 14,000 / bal      0   effMin 14,000
+ *            → used      0, earned  9,000, pay 16,000, 잔액 →  9,000
+ *   2회차    items  5,000 / min 14,000 / bal  9,000   effMin  5,000 (충족)
+ *            → used  7,000, earned      0, pay      0, 잔액 →  2,000  (결제 0원)
+ *   크게 담음 items 30,000 / min 14,000 / bal  9,000   effMin  5,000
+ *            → used  9,000, earned      0, pay 23,000, 잔액 →      0
+ *   잔액 부족 items  5,000 / min 14,000 / bal  3,000   effMin 11,000 (미달 6,000)
+ *            → used  3,000, earned  6,000, pay 10,000, 잔액 →  6,000
  *
  * 잔액이 충분하면 잔액은 항상 줄어든다(= itemsTotal + deliveryFee 만큼). 늘어나는 것은 잔액이
  * 미달분보다 적을 때뿐이고, 그때는 실제로 선불이 필요한 상황이다.
@@ -50,7 +61,7 @@ public record CreditPlan(
 	/** 담은 음식값. 최소주문 판정 기준이다(배달비는 빼고 본다). */
 	int itemsTotal,
 
-	/** 가게가 받을 음식값. 최소주문에 미달하면 최소주문 금액이 된다. */
+	/** 가게가 받을 음식값. 잔액으로 낮춘 최소주문에도 미달하면 그 금액이 된다. */
 	int base,
 
 	/** 음식 대신 포인트로 돌려받는 금액. 미달이 없으면 0. */
@@ -84,7 +95,10 @@ public record CreditPlan(
 				plain, deliveryFee, plain, balance, balance);
 		}
 
-		int base = Math.max(itemsTotal, minOrderPrice);
+		// 이미 이 가게에 낸 돈(잔액)만큼 최소주문을 낮춘다.
+		int effectiveMin = Math.max(0, minOrderPrice - balance);
+
+		int base = Math.max(itemsTotal, effectiveMin);
 		int shortfall = base - itemsTotal;
 		int payable = base + deliveryFee;
 
