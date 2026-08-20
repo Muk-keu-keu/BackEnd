@@ -35,8 +35,23 @@ public record OrderCreateRequest(
 	 * 400 으로 죽는다.
 	 */
 	@Valid Source source,
-	@Valid @NotEmpty List<Store> stores
+	@Valid @NotEmpty List<Store> stores,
+
+	/**
+	 * 채움 포인트를 쓸지. **null 이면 false 다.**
+	 *
+	 * 필드를 새로 넣으면서도 기존 호출을 깨지 않으려고 Boolean 으로 둔다. 이 값을 안 보내는
+	 * 클라이언트는 지금까지와 똑같이 동작한다 — 최소 주문 미달이면 400 이고, 잔액은 건드리지 않는다.
+	 *
+	 * true 면 서버가 가게별로 금액을 다시 계산한다. 다른 금액은 클라이언트 값을 그대로 믿지만
+	 * (위 주석 참고) 포인트는 돈이라 여기만 예외로 둔다.
+	 */
+	Boolean usePrepaid
 ) {
+
+	public boolean isUsePrepaid() {
+		return Boolean.TRUE.equals(usePrepaid);
+	}
 
 	public record Source(
 		@NotNull SourcePlatform platform,
