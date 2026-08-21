@@ -9,8 +9,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import org.springframework.stereotype.Service;
@@ -107,11 +105,6 @@ public class AnalysisService {
 	 */
 	private static final double MIN_SIMILARITY = 0.30;
 
-	/**
-	 * 요약을 기다려 주는 한계(초). 클라이언트 자체 read timeout 보다 살짝 길게 잡아
-	 * 평소에는 그쪽이 먼저 끊기게 한다. 여기 걸리는 것은 스레드가 밀렸을 때뿐이다.
-	 */
-	private static final int SUMMARY_WAIT_SECONDS = 4;
 
 	private final UserRepository userRepository;
 	private final RestaurantRepository restaurantRepository;
@@ -145,18 +138,11 @@ public class AnalysisService {
 			return empty(EmptyReason.NO_SIMILAR_MENU);
 		}
 
-		// ── ④ 요약 생성을 먼저 띄운다 ─────────────────────────
-		// 요약에 필요한 값(요리명·브랜드 확정 여부·후보 개수)은 여기서 이미 다 정해졌고
-		// ETA 는 요약에 쓰지 않는다. 그래서 길찾기와 동시에 돌려도 결과가 달라지지 않는다.
-		// 순차로 부르면 두 왕복이 더해지지만, 겹쳐 두면 느린 쪽 하나로 끝난다.
-		CompletableFuture<String> summaryFuture = CompletableFuture.supplyAsync(
-			() -> grokSummaryClient.summarize(buildSummaryRequest(request, exactMatches, dishResults)));
-
-		// ── ⑤ 응답에 실린 가게만 실제 이동시간으로 바꾼다 ─────
+		// ── ④ 응답에 실린 가게만 실제 이동시간으로 바꾼다 ─────
 		Integer maxDeliveryMin = request.preferences() == null ? null : request.preferences().maxDeliveryMin();
 		AnalysisResponse response = applyEta(user, nearby, exactMatches, dishResults, maxDeliveryMin);
 
-		// ── ⑤-1 배달시간 조건은 실제 etaMin 이 나온 뒤에 건다 ──
+		// ── ④-1 배달시간 조건은 실제 etaMin 이 나온 뒤에 건다 ──
 		// delivery_min(가게가 적어 둔 고정값)으로 매칭 전에 걸렀더니, 화면에 보여줄
 		// etaMin 이 계산되기도 전에 가게가 통째로 빠지는 문제가 있었다. 이 필터는
 		// applyEta 뒤 매칭된 소수 가게에만 적용되므로 카카오 호출 비용에는 영향이 없다.
@@ -165,11 +151,22 @@ public class AnalysisService {
 			return empty(EmptyReason.DELIVERY_TIME_FILTERED);
 		}
 
-		// ── ⑥ 카드마다 태그·문구를 붙인다 ────────────────────
+		// ── ⑤ 카드마다 태그와 템플릿 문구를 붙인다 ───────────
 		//    거리·ETA 가 확정된 뒤여야 하고, 요리별 1등·최근접은 후보 전체가 모여야 정해진다.
+		//    여기서 모든 카드가 일단 문구를 갖는다. LLM 은 그 위를 덮을 뿐이라
+		//    어떻게 실패하든 문구가 비지 않는다.
 		response = matchReasonTagger.apply(response);
 
-		return withSummary(response, awaitSummary(summaryFuture));
+		// ── ⑥ 최종 카드로 문장을 만들어 덮어쓴다 ─────────────
+		//    길찾기와 병렬로 먼저 띄웠더니 배달시간 필터가 카드를 덜어내기 전 목록을 보고 써서,
+		//    화면에는 3곳뿐인데 요약이 "4곳 찾았어요" 라고 말하는 일이 있었다. 지운 카드에 대한
+		//    문장을 만드느라 토큰도 버렸다. 그래서 확정된 목록을 보고 한 번에 만든다.
+		//    병렬을 잃지만 길찾기는 1초가 안 되고 문장 생성은 몇 초라 총 시간 차이가 거의 없다.
+		//    narrate 는 어떤 실패에도 예외를 던지지 않고 빈 결과를 준다.
+		GrokSummaryClient.Narration narration = grokSummaryClient.narrate(
+			buildSummaryRequest(request, response.exactMatches(), response.dishResults()));
+
+		return applyNarration(response, narration);
 	}
 
 	/** 결과가 빈 응답. 이유를 함께 실어 프론트가 왜 비었는지 말할 수 있게 한다. */
@@ -177,32 +174,63 @@ public class AnalysisService {
 		return new AnalysisResponse(null, reason, List.of(), List.of());
 	}
 
-	/** 요약은 부가 정보다. 못 받아도 검색 결과는 그대로 내보낸다. */
-	private String awaitSummary(CompletableFuture<String> future) {
-		try {
-			return future.get(SUMMARY_WAIT_SECONDS, TimeUnit.SECONDS);
-		} catch (Exception e) {
-			future.cancel(true);
-			log.warn("요약을 기다리지 못했다. summary 없이 내보낸다: {}", e.getMessage());
-			return null;
+	/**
+	 * LLM 이 써 준 문장을 카드에 덮어쓴다. 못 받은 카드는 태거가 넣어 둔 템플릿 문구가 남는다.
+	 *
+	 * id 에 목록 순서를 쓰지 않고 restaurantId 를 쓴다. 페이로드를 만든 시점(④)과 지금(⑦)
+	 * 사이에 filterByMaxDeliveryMin 이 카드를 덜어낼 수 있어 위치가 밀리기 때문이다.
+	 * 가게 번호는 그 사이에 변하지 않는다.
+	 */
+	private AnalysisResponse applyNarration(AnalysisResponse response,
+		GrokSummaryClient.Narration narration) {
+
+		List<ExactMatch> exacts = response.exactMatches().stream()
+			.map(m -> {
+				String written = narration.reasonOf(exactId(m));
+				return written == null ? m : new ExactMatch(m.brandName(), m.restaurant(),
+					m.items(), m.totalPrice(), m.tags(), written);
+			})
+			.toList();
+
+		List<DishResult> dishes = new ArrayList<>();
+		for (int i = 0; i < response.dishResults().size(); i++) {
+			DishResult dish = response.dishResults().get(i);
+			int dishIndex = i;
+			dishes.add(new DishResult(dish.dishName(), dish.candidates().stream()
+				.map(c -> {
+					String written = narration.reasonOf(candidateId(dishIndex, c));
+					return written == null ? c : new Candidate(c.restaurant(), c.item(),
+						c.score(), c.tags(), written);
+				})
+				.toList()));
 		}
+
+		return new AnalysisResponse(narration.summary(), response.emptyReason(), exacts, dishes);
 	}
 
-	private AnalysisResponse withSummary(AnalysisResponse response, String summary) {
-		return new AnalysisResponse(summary, response.emptyReason(),
-			response.exactMatches(), response.dishResults());
+	private static String exactId(ExactMatch match) {
+		return "e" + match.restaurant().restaurantId();
+	}
+
+	private static String candidateId(int dishIndex, Candidate candidate) {
+		return "d" + dishIndex + "r" + candidate.restaurant().restaurantId();
 	}
 
 	/**
-	 * 요약에 넘길 최소 사실만 추린다.
+	 * 문장을 쓰는 데 필요한 재료만 추린다.
 	 *
-	 * AnalysisResponse 를 통째로 넘기지 않는다. 가격·주소·score 까지 들어가면 모델이 그걸
-	 * 쓰려 들고, "2만원짜리 치킨이 있어요" 같은 문장이 나와 아래 카드와 어긋난다.
-	 * 요약을 쓰는 데 필요한 것은 요리 이름, 브랜드가 잡혔는지, 몇 개 찾았는지, 왜 0개인지뿐이다.
+	 * 카드가 화면에 이미 보여주는 값(거리·ETA·평점·score)은 넣지 않는다. 넣으면 모델이
+	 * 그것을 문장에 되읽어서, 카드 옆 숫자를 한 번 더 말할 뿐인 문구가 나온다. 그게 지금
+	 * 템플릿 문구가 심심한 이유이기도 하다.
+	 *
+	 * 대신 카드가 보여주지 못하는 값을 넣는다 — 메뉴 별칭, 고를 수 있는 옵션 전체, 영상 원문.
+	 * 후보를 실제로 가르는 것은 이쪽이다. '통오징어떡볶이' 라는 별칭이나 '순살 변경' 옵션은
+	 * 지금 응답 어디에도 안 나가지만, 그게 있어야 카드마다 다른 말을 할 수 있다.
 	 */
 	private GrokSummaryClient.SummaryRequest buildSummaryRequest(AnalysisRequest request,
 		List<ExactMatch> exactMatches, List<DishResult> dishResults) {
 
+		Map<Long, Menu> menuById = loadCandidateMenus(dishResults);
 		List<AnalysisRequest.Dish> dishes = request.extracted().dishes();
 		List<GrokSummaryClient.DishSummary> summaries = new ArrayList<>();
 
@@ -210,20 +238,94 @@ public class AnalysisService {
 			AnalysisRequest.Dish dish = dishes.get(i);
 
 			// exactMatches 는 brandName 으로 묶여 있으므로 그대로 대조하면 된다.
-			String exactStore = dish.brandName() == null ? null : exactMatches.stream()
+			ExactMatch match = dish.brandName() == null ? null : exactMatches.stream()
 				.filter(m -> dish.brandName().equals(m.brandName()))
-				.map(m -> m.restaurant().name())
 				.findFirst().orElse(null);
 
 			// findDishResults 가 dishes 순서대로 돌기 때문에 인덱스가 맞는다.
-			int count = i < dishResults.size() ? dishResults.get(i).candidates().size() : 0;
+			List<Candidate> candidates = i < dishResults.size()
+				? dishResults.get(i).candidates() : List.of();
+
+			List<GrokSummaryClient.CandidateSummary> cards = new ArrayList<>();
+			for (int j = 0; j < candidates.size(); j++) {
+				cards.add(toCandidateSummary(i, j + 1, candidates.get(j), menuById));
+			}
 
 			summaries.add(new GrokSummaryClient.DishSummary(
-				dish.name(), dish.brandName(), exactStore, count,
-				count == 0 ? EmptyReason.NO_SIMILAR_MENU.name() : null));
+				dish.name(), dish.brandName(), dish.description(), dish.options(),
+				toExactSummary(match), cards, cards.size(),
+				cards.isEmpty() ? EmptyReason.NO_SIMILAR_MENU.name() : null));
 		}
 
-		return new GrokSummaryClient.SummaryRequest(summaries, toSummaryPreferences(request.preferences()));
+		return new GrokSummaryClient.SummaryRequest(
+			request.source() == null ? null : request.source().rawText(),
+			summaries, toSummaryPreferences(request.preferences()));
+	}
+
+	/**
+	 * 별칭·설명·전체 옵션은 Menu 에만 있고 응답 DTO 에는 없다. 한 번에 읽는다.
+	 * 후보는 요리당 5곳 이하라 이 조회는 한 번이고 행 수도 적다.
+	 */
+	private Map<Long, Menu> loadCandidateMenus(List<DishResult> dishResults) {
+		List<Long> menuIds = dishResults.stream()
+			.flatMap(d -> d.candidates().stream())
+			.map(c -> c.item().menuId())
+			.distinct()
+			.toList();
+		if (menuIds.isEmpty()) {
+			return Map.of();
+		}
+		return menuRepository.findAllByIdIn(menuIds).stream()
+			.collect(Collectors.toMap(Menu::getId, m -> m, (a, b) -> a));
+	}
+
+	private GrokSummaryClient.CandidateSummary toCandidateSummary(int dishIndex, int rank,
+		Candidate candidate, Map<Long, Menu> menuById) {
+
+		Menu menu = menuById.get(candidate.item().menuId());
+		return new GrokSummaryClient.CandidateSummary(
+			candidateId(dishIndex, candidate),
+			rank,
+			candidate.restaurant().name(),
+			candidate.item().name(),
+			menu == null ? null : menu.getAliases(),
+			menu == null ? null : menu.getDescription(),
+			menu == null ? null : menu.getTasteTags(),
+			candidate.item().price(),
+			allOptionNames(menu),
+			pickedOptionNames(candidate.item()));
+	}
+
+	private GrokSummaryClient.ExactSummary toExactSummary(ExactMatch match) {
+		if (match == null) {
+			return null;
+		}
+		return new GrokSummaryClient.ExactSummary(
+			exactId(match),
+			match.restaurant().name(),
+			match.items().stream().map(ItemResponse::name).toList(),
+			match.totalPrice(),
+			match.items().stream()
+				.flatMap(item -> item.options().stream())
+				.map(OptionResponse::name)
+				.distinct().toList());
+	}
+
+	/** 이 메뉴에서 고를 수 있는 옵션 전체. "순살로 바꿀 수 있어요" 같은 문장의 근거다. */
+	private List<String> allOptionNames(Menu menu) {
+		if (menu == null) {
+			return List.of();
+		}
+		return optionMatcher.parse(menu.getOptions()).stream()
+			.map(MenuOption::name)
+			.toList();
+	}
+
+	/** 그중 영상에서 언급돼 실제로 켜진 것. */
+	private List<String> pickedOptionNames(ItemResponse item) {
+		return item.options().stream()
+			.map(OptionResponse::name)
+			.toList();
 	}
 
 	private GrokSummaryClient.Preferences toSummaryPreferences(AnalysisRequest.Preferences prefs) {
