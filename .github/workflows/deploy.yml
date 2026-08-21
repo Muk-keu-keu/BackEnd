@@ -64,13 +64,15 @@ jobs:
           # ── OCI Generative AI (분석 요약). 없으면 요약만 꺼지고 나머지는 정상 동작한다 ──
           OCI_GENAI_API_KEY: ${{ secrets.OCI_GENAI_API_KEY }}
           OCI_GENAI_BASE_URL: ${{ secrets.OCI_GENAI_BASE_URL }}
+          OCI_GENAI_MODEL: ${{ secrets.OCI_GENAI_MODEL }}
+          OCI_GENAI_TIMEOUT_SECONDS: ${{ secrets.OCI_GENAI_TIMEOUT_SECONDS }}
           # ── 앱 ──
           CORS_ALLOWED_ORIGINS: ${{ secrets.CORS_ALLOWED_ORIGINS }}
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          envs: ORACLE_DB_URL,ORACLE_DB_USERNAME,ORACLE_DB_PASSWORD,DB_POOL_SIZE,JPA_DDL_AUTO,JPA_SHOW_SQL,JWT_APP_KEY,JWT_ACCESS_EXP,JWT_REFRESH_EXP,KAKAO_NAVI_KEY,KAKAO_NAVI_URL,CORS_ALLOWED_ORIGINS,OCI_PAR_UPLOAD_URL,OCI_PUBLIC_BASE_URL,OCI_GENAI_API_KEY,OCI_GENAI_BASE_URL
+          envs: ORACLE_DB_URL,ORACLE_DB_USERNAME,ORACLE_DB_PASSWORD,DB_POOL_SIZE,JPA_DDL_AUTO,JPA_SHOW_SQL,JWT_APP_KEY,JWT_ACCESS_EXP,JWT_REFRESH_EXP,KAKAO_NAVI_KEY,KAKAO_NAVI_URL,CORS_ALLOWED_ORIGINS,OCI_PAR_UPLOAD_URL,OCI_PUBLIC_BASE_URL,OCI_GENAI_API_KEY,OCI_GENAI_BASE_URL,OCI_GENAI_MODEL,OCI_GENAI_TIMEOUT_SECONDS
           script: |
             set -e
             APP_DIR=$HOME/mukkeu
@@ -95,8 +97,10 @@ jobs:
             OCI_PUBLIC_BASE_URL=${OCI_PUBLIC_BASE_URL}
             OCI_GENAI_API_KEY=${OCI_GENAI_API_KEY}
             OCI_GENAI_BASE_URL=${OCI_GENAI_BASE_URL}
-            OCI_GENAI_MODEL=xai.grok-4.20-0309-non-reasoning
-            OCI_GENAI_TIMEOUT_SECONDS=3
+            OCI_GENAI_MODEL=${OCI_GENAI_MODEL:-xai.grok-4.20-0309-non-reasoning}
+            # 카드 문구까지 만들면서 생성할 글자 수가 늘었다. 3초로는 잘려 요약이 null 이 된다.
+            # 초 단위 정수다. "12s" 처럼 단위를 붙이면 기동 시 숫자 변환에 실패한다.
+            OCI_GENAI_TIMEOUT_SECONDS=${OCI_GENAI_TIMEOUT_SECONDS:-12}
             SERVER_PORT=8700
             EOF
             chmod 600 $APP_DIR/.env
